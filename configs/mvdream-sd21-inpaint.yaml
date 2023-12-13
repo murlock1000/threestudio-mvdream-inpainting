@@ -3,25 +3,15 @@ tag: "${rmspace:${system.prompt_processor.prompt},_}"
 exp_root_dir: "outputs"
 seed: 0
 
-data_type: "mvdream-random-multiview-camera-datamodule"
+data_type: "mvdream-multiview-camera-datamodule"
 data:
   batch_size: [4,4]
   n_view: 4
-  # 0-4999: 64x64, >=5000: 256x256
-  width: [64, 256]
-  height: [64, 256]
-  resolution_milestones: [5000]
-  camera_distance_range: [0.8, 1.0] # relative
-  fovy_range: [15, 60]
-  elevation_range: [0, 30]
-  camera_perturb: 0.
-  center_perturb: 0.
-  up_perturb: 0.
-  n_val_views: 4
-  eval_camera_distance: 3.0
-  eval_fovy_deg: 40.
+  train_downsample_resolution: 8
+  eval_downsample_resolution: 2
+  dataroot: ???
 
-system_type: "mvdream-system"
+system_type: "mvdream-inpaint-system"
 system:
   geometry_type: "implicit-volume"
   geometry:
@@ -65,7 +55,7 @@ system:
     front_threshold: 30.
     back_threshold: 30.
 
-  guidance_type: "mvdream-multiview-diffusion-guidance"
+  guidance_type: "mvdream-inpaint-multiview-diffusion-guidance"
   guidance:
     model_name: "sd-v2.1-base-4view"
     ckpt_path: null # path to a pre-downloaded checkpoint file (null for loading from URL)
@@ -74,6 +64,7 @@ system:
     max_step_percent: [0, 0.98, 0.50, 8000]
     recon_loss: true
     recon_std_rescale: 0.5
+    view_dependent_prompting: false # Disable this for now
 
   loggers:
     wandb:
