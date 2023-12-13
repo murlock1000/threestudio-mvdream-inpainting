@@ -1,0 +1,18 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Current File",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            //"args": ["--config", "custom/threestudio-mvdream-inpainting/configs/mvdream-sd21.yaml", "--train", "--gpu", "0", "system.prompt_processor.prompt=\"an astronaut riding a horse\""]
+            "args": ["--config", "custom/threestudio-mvdream-inpainting/configs/mvdream-sd21-inpaint.yaml", "--train", "--gpu", "0", "system.prompt_processor.prompt=\"an astronaut riding a horse\"", "data.dataroot=\"data/face\""]
+        }
+    ]
+}

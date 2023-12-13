@@ -1,0 +1,13 @@
+conda install -c "nvidia/label/cuda-11.8.0" cuda-toolkit
+
+conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia
+
+pip install -r requirements.txt
+
+conda install triton
+
+pip install -U xformers --index-url https://download.pytorch.org/whl/cu118
+
+python launch.py --config configs/dreamfusion-sd.yaml --train --gpu 0 system.prompt_processor.prompt="a zoomed out DSLR photo of a baby bunny sitting on top of a stack of pancakes"
+
+python launch.py --config custom/threestudio-mvdream-inpainting/configs/mvdream-sd21.yaml --train --gpu 0 system.prompt_processor.prompt="an astronaut riding a horse"
