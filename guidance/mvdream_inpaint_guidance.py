@@ -111,11 +111,12 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
         rgb_BCHW = rgb.permute(0, 3, 1, 2)
         gt_rgb_BCHW = gt_rgb.permute(0, 3, 1, 2)
 
-        if text_embeddings is None:
-            text_embeddings = prompt_utils.get_text_embeddings(
-                #elevation, azimuth, camera_distances, self.cfg.view_dependent_prompting
-                torch.ones_like(rgb), None, None, self.cfg.view_dependent_prompting
-            )
+               
+       # if text_embeddings is None:
+        #    text_embeddings = prompt_utils.get_text_embeddings(
+        #        #elevation, azimuth, camera_distances, self.cfg.view_dependent_prompting
+        #        torch.ones_like(rgb), None, None, self.cfg.view_dependent_prompting
+        #    )
 
         if input_is_latent:
             latents = rgb
@@ -138,7 +139,8 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
                     align_corners=False,
                 )
                 # encode image into latents with vae, requires grad!
-                latents = self.encode_images(pred_rgb)
+                latents = self.encode_images(pred_rgb) 
+        
 
         pred_gt_rgb = F.interpolate(
                     gt_rgb_BCHW,
@@ -149,7 +151,7 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
                 # encode image into latents with vae, requires grad!
         og_rgb_latents = self.encode_images(pred_gt_rgb)
 
-        # sample timestep
+        """ # sample timestep
         if timestep is None:
             t = torch.randint(
                 self.min_step,
@@ -188,15 +190,15 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
                 }
             else:
                 context = {"context": text_embeddings}
-            noise_pred = self.model.apply_model(latent_model_input, t_expand, context)
+            noise_pred = self.model.apply_model(latent_model_input, t_expand, context) """
 
         # perform guidance
-        noise_pred_text, noise_pred_uncond = noise_pred.chunk(
-            2
-        )  # Note: flipped compared to stable-dreamfusion
-        noise_pred = noise_pred_uncond + self.cfg.guidance_scale * (
-            noise_pred_text - noise_pred_uncond
-        )
+       # noise_pred_text, noise_pred_uncond = noise_pred.chunk(
+       #     2
+       # )  # Note: flipped compared to stable-dreamfusion
+       # noise_pred = noise_pred_uncond + self.cfg.guidance_scale * (
+       #     noise_pred_text - noise_pred_uncond
+       # )
 
         # TODO Define inpainting loss as:
         # Combination of 2 loss figures:
@@ -207,14 +209,15 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
         # Calculate Inpainting loss
         if self.cfg.recon_loss:
             # reconstruct x0
-            mvlatents_recon = self.model.predict_start_from_noise(
-                latents_noisy, t, noise_pred
-            )
+            #mvlatents_recon = self.model.predict_start_from_noise(
+            #    latents_noisy, t, noise_pred
+            #)
 
-            latents_recon = torch.stack((mvlatents_recon[0], og_rgb_latents[1], og_rgb_latents[2], og_rgb_latents[3]))
+            #latents_recon = torch.stack((mvlatents_recon[0], og_rgb_latents[1], og_rgb_latents[2], og_rgb_latents[3]))
+            latents_recon = og_rgb_latents#torch.stack((og_rgb_latents[0], og_rgb_latents[1], og_rgb_latents[2], og_rgb_latents[3]))
 
             # clip or rescale x0
-            if self.cfg.recon_std_rescale > 0:
+            """ if self.cfg.recon_std_rescale > 0:
                 latents_recon_nocfg = self.model.predict_start_from_noise(
                     latents_noisy, t, noise_pred_text
                 )
@@ -234,17 +237,18 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
                 latents_recon = (
                     self.cfg.recon_std_rescale * latents_recon_adjust
                     + (1 - self.cfg.recon_std_rescale) * latents_recon
-                )
+                ) """
 
             # x0-reconstruction loss from Sec 3.2 and Appendix
             loss = (
                 0.5
-                * F.mse_loss(latents, latents_recon.detach(), reduction="sum")
+                * F.mse_loss(latents, latents_recon, reduction="sum")
                 / latents.shape[0]
             )
             grad = torch.autograd.grad(loss, latents, retain_graph=True)[0]
 
-        else:
+            """         
+            else:
             # Original SDS
             # w(t), sigma_t^2
             w = 1 - self.alphas_cumprod[t]
@@ -257,7 +261,8 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
 
             target = (latents - grad).detach()
             # d(loss)/d(latents) = latents - target = latents - (latents - grad) = grad
-            loss = 0.5 * F.mse_loss(latents, target, reduction="sum") / latents.shape[0]
+            loss = 0.5 * F.mse_loss(latents, target, reduction="sum") / latents.shape[0] 
+            """
 
         return {
             "loss_sds": loss,

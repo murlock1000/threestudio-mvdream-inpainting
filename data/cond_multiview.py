@@ -1,3 +1,4 @@
+import json
 import math
 import os
 import random
@@ -9,8 +10,10 @@ import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 import torchvision
+import tqdm
 from threestudio import register
-from threestudio.data.multiview import MultiviewDataModule, MultiviewDataset, MultiviewIterableDataset, MultiviewsDataModuleConfig
+import threestudio
+from threestudio.data.multiview import MultiviewDataModule, MultiviewDataset, MultiviewIterableDataset, MultiviewsDataModuleConfig, convert_proj
 from threestudio.data.uncond import (
     RandomCameraDataModuleConfig,
     RandomCameraDataset,
@@ -31,21 +34,153 @@ from torch.utils.data import DataLoader, Dataset, IterableDataset
 @dataclass
 class MVDreamMultiviewsDataModuleConfig(MultiviewsDataModuleConfig):
     n_view: int = 4
+    crop_to: int = 1024
+    input_size: int = 256
 
-class RandomMultiviewIterableDataset(MultiviewIterableDataset):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        
-        self.cropTo = 738
+def normalize_camera(camera_matrix):
+    ''' normalize the camera location onto a unit-sphere'''
+    if isinstance(camera_matrix, np.ndarray):
+        camera_matrix = camera_matrix.reshape(-1,4,4)
+        translation = camera_matrix[:,:3,3]
+        translation = translation / (np.linalg.norm(translation, axis=1, keepdims=True) + 1e-8)
+        camera_matrix[:,:3,3] = translation
+    else:
+        camera_matrix = camera_matrix.reshape(-1,4,4)
+        translation = camera_matrix[:,:3,3]
+        translation = translation / (torch.norm(translation, dim=1, keepdim=True) + 1e-8)
+        camera_matrix[:,:3,3] = translation
+    return camera_matrix.reshape(-1,16)
 
-        # Crop down to get aspect ratio of 1:1
-        crop = torchvision.transforms.CenterCrop(self.cropTo)
-        frames_img_BCHW: Float[Tensor, "N 3 H W"] = self.frames_img.permute(0, 3, 1, 2)
-        frames_img_cropped: Float[Tensor, "N 3 H W"] = crop.forward(frames_img_BCHW)
+def crop_center(img, w = 1024, h = 1024):
+        # Get the current size of the image
+        center = img.shape
 
-        self.frames_img: Float[Tensor, "N H W 3"] = frames_img_cropped.permute(0, 2, 3, 1)
+        # Calculate the coordinates for cropping
+        x = center[1]/2 - w/2
+        y = center[0]/2 - h/2
+
+        return img[int(y):int(y+h), int(x):int(x+w)]
+
+class MVDreamMultiviewIterableDataset(IterableDataset):
+    def __init__(self, cfg: Any, split: str) -> None:
+        super().__init__()
+        self.cfg: MVDreamMultiviewsDataModuleConfig = cfg
+
+        camera_dict = json.load(
+            open(os.path.join(self.cfg.dataroot, f"transforms_{split}.json"), "r")
+        )
+
+        frames = camera_dict["frames"]
+        camera_angle_x = camera_dict["camera_angle_x"]
+        camera_angle_y = camera_dict["camera_angle_y"]
+        fl_x = camera_dict["fl_x"]
+        fl_y = camera_dict["fl_y"]
+        k1 = camera_dict["k1"]
+        k2 = camera_dict["k2"]
+        p1 = camera_dict["p1"]
+        p2 = camera_dict["p2"]
+        cx = camera_dict["cx"]
+        cy = camera_dict["cy"]
+        w = camera_dict["w"]
+        h = camera_dict["h"]
+        aabb_scale = camera_dict["aabb_scale"]
+
+        wScale = self.cfg.crop_to // self.cfg.input_size
+        hScale = self.cfg.crop_to // self.cfg.input_size
+
+        frames_proj = []
+        frames_c2w = []
+        frames_position = []
+        frames_direction = []
+        frames_img = []
+
+        self.frame_w = self.cfg.input_size
+        self.frame_h = self.cfg.input_size
+        threestudio.info("Loading frames...")
+        self.n_frames = len(frames)
+
+        c2w_list = []
+        for frame in frames:
+            extrinsic: Float[Tensor, "4 4"] = torch.as_tensor(
+                frame["transform_matrix"], dtype=torch.float32
+            )
+            # Normalize camera to unit sphere
+            c2w = normalize_camera(extrinsic).reshape(4,4)
+            c2w_list.append(c2w)
+        c2w_list = torch.stack(c2w_list, dim=0)
 
 
+        for idx, frame in enumerate(frames):
+            intrinsic: Float[Tensor, "4 4"] = torch.eye(4)
+            intrinsic[0, 0] = fl_x / wScale
+            intrinsic[1, 1] = fl_y / hScale
+            intrinsic[0, 2] = cx / wScale
+            intrinsic[1, 2] = cy / hScale
+
+            frame_path = os.path.join(self.cfg.dataroot, frame["file_path"]+".png")
+            img = cv2.imread(frame_path)[:, :, ::-1].copy()
+            
+            img = crop_center(img, self.cfg.crop_to, self.cfg.crop_to)
+
+            img = cv2.resize(img, (self.frame_w, self.frame_h))
+            img: Float[Tensor, "H W 3"] = torch.FloatTensor(img) / 255
+            frames_img.append(img)
+
+            direction: Float[Tensor, "H W 3"] = get_ray_directions(
+                32,#self.frame_h,
+                32,#self.frame_w,
+                (intrinsic[0, 0], intrinsic[1, 1]),
+                (intrinsic[0, 2], intrinsic[1, 2]),
+                use_pixel_centers=False,
+            )
+
+            c2w = c2w_list[idx]
+            camera_position: Float[Tensor, "3"] = c2w[:3, 3:].reshape(-1)
+
+            near = 0.1
+            far = 1000.0
+            proj = convert_proj(intrinsic, self.frame_h, self.frame_w, near, far)
+            proj: Float[Tensor, "4 4"] = torch.FloatTensor(proj)
+            frames_proj.append(proj)
+            frames_c2w.append(c2w)
+            frames_position.append(camera_position)
+            frames_direction.append(direction)
+            
+        threestudio.info("Loaded frames.")
+
+        self.frames_proj: Float[Tensor, "B 4 4"] = torch.stack(frames_proj, dim=0)
+        self.frames_c2w: Float[Tensor, "B 4 4"] = torch.stack(frames_c2w, dim=0)
+        self.frames_position: Float[Tensor, "B 3"] = torch.stack(frames_position, dim=0)
+        self.frames_direction: Float[Tensor, "B H W 3"] = torch.stack(
+            frames_direction, dim=0
+        )
+        self.frames_img: Float[Tensor, "B H W 3"] = torch.stack(frames_img, dim=0)
+
+        self.rays_o, self.rays_d = get_rays(
+            self.frames_direction,
+            self.frames_c2w,
+            keepdim=True,
+            normalize=self.cfg.rays_d_normalize,
+        )
+        self.mvp_mtx: Float[Tensor, "B 4 4"] = get_mvp_matrix(
+            self.frames_c2w, self.frames_proj
+        )
+        self.light_positions: Float[Tensor, "B 3"] = torch.zeros_like(
+            self.frames_position
+        )
+
+        self.batch_sizes: List[int] = (
+            [self.cfg.batch_size]
+            if isinstance(self.cfg.batch_size, int)
+            else self.cfg.batch_size
+        )
+
+        self.batch_size: int = self.batch_sizes[0]
+
+    def __iter__(self):
+        while True:
+            yield {}
+    
     def collate(self, batch) -> Dict[str, Any]:
         assert (
             self.batch_size % self.cfg.n_view == 0
@@ -54,6 +189,7 @@ class RandomMultiviewIterableDataset(MultiviewIterableDataset):
 
         index = torch.randint(0, self.n_frames, (4,))
         return {
+            "index": index,
             "rays_o": self.rays_o[index],
             "rays_d": self.rays_d[index],
             "mvp_mtx": self.mvp_mtx[index],
@@ -69,228 +205,6 @@ class RandomMultiviewIterableDataset(MultiviewIterableDataset):
             "fovy": None # Not used by model for camera conditioning
         }
 
-class RandomMultiviewCameraIterableDataset(RandomCameraIterableDataset):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.zoom_range = self.cfg.zoom_range
-
-    def collate(self, batch) -> Dict[str, Any]:
-        assert (
-            self.batch_size % self.cfg.n_view == 0
-        ), f"batch_size ({self.batch_size}) must be dividable by n_view ({self.cfg.n_view})!"
-        real_batch_size = self.batch_size // self.cfg.n_view
-
-        # sample elevation angles
-        elevation_deg: Float[Tensor, "B"]
-        elevation: Float[Tensor, "B"]
-        if random.random() < 0.5:
-            # sample elevation angles uniformly with a probability 0.5 (biased towards poles)
-            elevation_deg = (
-                torch.rand(real_batch_size)
-                * (self.elevation_range[1] - self.elevation_range[0])
-                + self.elevation_range[0]
-            ).repeat_interleave(self.cfg.n_view, dim=0)
-            elevation = elevation_deg * math.pi / 180
-        else:
-            # otherwise sample uniformly on sphere
-            elevation_range_percent = [
-                (self.elevation_range[0] + 90.0) / 180.0,
-                (self.elevation_range[1] + 90.0) / 180.0,
-            ]
-            # inverse transform sampling
-            elevation = torch.asin(
-                2
-                * (
-                    torch.rand(real_batch_size)
-                    * (elevation_range_percent[1] - elevation_range_percent[0])
-                    + elevation_range_percent[0]
-                )
-                - 1.0
-            ).repeat_interleave(self.cfg.n_view, dim=0)
-            elevation_deg = elevation / math.pi * 180.0
-
-        # sample azimuth angles from a uniform distribution bounded by azimuth_range
-        azimuth_deg: Float[Tensor, "B"]
-        # ensures sampled azimuth angles in a batch cover the whole range
-        azimuth_deg = (
-            torch.rand(real_batch_size).reshape(-1, 1)
-            + torch.arange(self.cfg.n_view).reshape(1, -1)
-        ).reshape(-1) / self.cfg.n_view * (
-            self.azimuth_range[1] - self.azimuth_range[0]
-        ) + self.azimuth_range[
-            0
-        ]
-        azimuth = azimuth_deg * math.pi / 180
-
-        ######## Different from original ########
-        # sample fovs from a uniform distribution bounded by fov_range
-        fovy_deg: Float[Tensor, "B"] = (
-            torch.rand(real_batch_size) * (self.fovy_range[1] - self.fovy_range[0])
-            + self.fovy_range[0]
-        ).repeat_interleave(self.cfg.n_view, dim=0)
-        fovy = fovy_deg * math.pi / 180
-
-        # sample distances from a uniform distribution bounded by distance_range
-        camera_distances: Float[Tensor, "B"] = (
-            torch.rand(real_batch_size)
-            * (self.camera_distance_range[1] - self.camera_distance_range[0])
-            + self.camera_distance_range[0]
-        ).repeat_interleave(self.cfg.n_view, dim=0)
-        if self.cfg.relative_radius:
-            scale = 1 / torch.tan(0.5 * fovy)
-            camera_distances = scale * camera_distances
-
-        # zoom in by decreasing fov after camera distance is fixed
-        zoom: Float[Tensor, "B"] = (
-            torch.rand(real_batch_size) * (self.zoom_range[1] - self.zoom_range[0])
-            + self.zoom_range[0]
-        ).repeat_interleave(self.cfg.n_view, dim=0)
-        fovy = fovy * zoom
-        fovy_deg = fovy_deg * zoom
-        ###########################################
-
-        # convert spherical coordinates to cartesian coordinates
-        # right hand coordinate system, x back, y right, z up
-        # elevation in (-90, 90), azimuth from +x to +y in (-180, 180)
-        camera_positions: Float[Tensor, "B 3"] = torch.stack(
-            [
-                camera_distances * torch.cos(elevation) * torch.cos(azimuth),
-                camera_distances * torch.cos(elevation) * torch.sin(azimuth),
-                camera_distances * torch.sin(elevation),
-            ],
-            dim=-1,
-        )
-
-        # default scene center at origin
-        center: Float[Tensor, "B 3"] = torch.zeros_like(camera_positions)
-        # default camera up direction as +z
-        up: Float[Tensor, "B 3"] = torch.as_tensor([0, 0, 1], dtype=torch.float32)[
-            None, :
-        ].repeat(self.batch_size, 1)
-
-        # sample camera perturbations from a uniform distribution [-camera_perturb, camera_perturb]
-        camera_perturb: Float[Tensor, "B 3"] = (
-            torch.rand(real_batch_size, 3) * 2 * self.cfg.camera_perturb
-            - self.cfg.camera_perturb
-        ).repeat_interleave(self.cfg.n_view, dim=0)
-        camera_positions = camera_positions + camera_perturb
-        # sample center perturbations from a normal distribution with mean 0 and std center_perturb
-        center_perturb: Float[Tensor, "B 3"] = (
-            torch.randn(real_batch_size, 3) * self.cfg.center_perturb
-        ).repeat_interleave(self.cfg.n_view, dim=0)
-        center = center + center_perturb
-        # sample up perturbations from a normal distribution with mean 0 and std up_perturb
-        up_perturb: Float[Tensor, "B 3"] = (
-            torch.randn(real_batch_size, 3) * self.cfg.up_perturb
-        ).repeat_interleave(self.cfg.n_view, dim=0)
-        up = up + up_perturb
-
-        # sample light distance from a uniform distribution bounded by light_distance_range
-        light_distances: Float[Tensor, "B"] = (
-            torch.rand(real_batch_size)
-            * (self.cfg.light_distance_range[1] - self.cfg.light_distance_range[0])
-            + self.cfg.light_distance_range[0]
-        ).repeat_interleave(self.cfg.n_view, dim=0)
-
-        if self.cfg.light_sample_strategy == "dreamfusion":
-            # sample light direction from a normal distribution with mean camera_position and std light_position_perturb
-            light_direction: Float[Tensor, "B 3"] = F.normalize(
-                camera_positions
-                + torch.randn(real_batch_size, 3).repeat_interleave(
-                    self.cfg.n_view, dim=0
-                )
-                * self.cfg.light_position_perturb,
-                dim=-1,
-            )
-            # get light position by scaling light direction by light distance
-            light_positions: Float[Tensor, "B 3"] = (
-                light_direction * light_distances[:, None]
-            )
-        elif self.cfg.light_sample_strategy == "magic3d":
-            # sample light direction within restricted angle range (pi/3)
-            local_z = F.normalize(camera_positions, dim=-1)
-            local_x = F.normalize(
-                torch.stack(
-                    [local_z[:, 1], -local_z[:, 0], torch.zeros_like(local_z[:, 0])],
-                    dim=-1,
-                ),
-                dim=-1,
-            )
-            local_y = F.normalize(torch.cross(local_z, local_x, dim=-1), dim=-1)
-            rot = torch.stack([local_x, local_y, local_z], dim=-1)
-            light_azimuth = (
-                torch.rand(real_batch_size) * math.pi - 2 * math.pi
-            ).repeat_interleave(
-                self.cfg.n_view, dim=0
-            )  # [-pi, pi]
-            light_elevation = (
-                torch.rand(real_batch_size) * math.pi / 3 + math.pi / 6
-            ).repeat_interleave(
-                self.cfg.n_view, dim=0
-            )  # [pi/6, pi/2]
-            light_positions_local = torch.stack(
-                [
-                    light_distances
-                    * torch.cos(light_elevation)
-                    * torch.cos(light_azimuth),
-                    light_distances
-                    * torch.cos(light_elevation)
-                    * torch.sin(light_azimuth),
-                    light_distances * torch.sin(light_elevation),
-                ],
-                dim=-1,
-            )
-            light_positions = (rot @ light_positions_local[:, :, None])[:, :, 0]
-        else:
-            raise ValueError(
-                f"Unknown light sample strategy: {self.cfg.light_sample_strategy}"
-            )
-
-        lookat: Float[Tensor, "B 3"] = F.normalize(center - camera_positions, dim=-1)
-        right: Float[Tensor, "B 3"] = F.normalize(torch.cross(lookat, up), dim=-1)
-        up = F.normalize(torch.cross(right, lookat), dim=-1)
-        c2w3x4: Float[Tensor, "B 3 4"] = torch.cat(
-            [torch.stack([right, up, -lookat], dim=-1), camera_positions[:, :, None]],
-            dim=-1,
-        )
-        c2w: Float[Tensor, "B 4 4"] = torch.cat(
-            [c2w3x4, torch.zeros_like(c2w3x4[:, :1])], dim=1
-        )
-        c2w[:, 3, 3] = 1.0
-
-        # get directions by dividing directions_unit_focal by focal length
-        focal_length: Float[Tensor, "B"] = 0.5 * self.height / torch.tan(0.5 * fovy)
-        directions: Float[Tensor, "B H W 3"] = self.directions_unit_focal[
-            None, :, :, :
-        ].repeat(self.batch_size, 1, 1, 1)
-        directions[:, :, :, :2] = (
-            directions[:, :, :, :2] / focal_length[:, None, None, None]
-        )
-
-        # Importance note: the returned rays_d MUST be normalized!
-        rays_o, rays_d = get_rays(
-            directions, c2w, keepdim=True, normalize=self.cfg.rays_d_normalize
-        )
-
-        proj_mtx: Float[Tensor, "B 4 4"] = get_projection_matrix(
-            fovy, self.width / self.height, 0.1, 1000.0
-        )  # FIXME: hard-coded near and far
-        mvp_mtx: Float[Tensor, "B 4 4"] = get_mvp_matrix(c2w, proj_mtx)
-
-        return {
-            "rays_o": rays_o,
-            "rays_d": rays_d,
-            "mvp_mtx": mvp_mtx,
-            "camera_positions": camera_positions,
-            "c2w": c2w,
-            "light_positions": light_positions,
-            "elevation": elevation_deg,
-            "azimuth": azimuth_deg,
-            "camera_distances": camera_distances,
-            "height": self.height,
-            "width": self.width,
-            "fovy": fovy,
-        }
 
 @register("mvdream-multiview-camera-datamodule")
 class MVDreamMultiviewCameraDataModule(pl.LightningDataModule):
@@ -302,11 +216,11 @@ class MVDreamMultiviewCameraDataModule(pl.LightningDataModule):
 
     def setup(self, stage=None) -> None:
         if stage in [None, "fit"]:
-            self.train_dataset = RandomMultiviewIterableDataset(self.cfg)
+            self.train_dataset = MVDreamMultiviewIterableDataset(self.cfg, "train")
         if stage in [None, "fit", "validate"]:
-            self.val_dataset = MultiviewDataset(self.cfg, "val")
+            self.val_dataset = MVDreamMultiviewIterableDataset(self.cfg, "val")
         if stage in [None, "test", "predict"]:
-            self.test_dataset = MultiviewDataset(self.cfg, "test")
+            self.test_dataset = MVDreamMultiviewIterableDataset(self.cfg, "test")
 
     def prepare_data(self):
         pass
