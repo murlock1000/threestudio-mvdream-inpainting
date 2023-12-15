@@ -1,8 +1,9 @@
 import os
 from dataclasses import dataclass, field
-
+import gc
 import threestudio
 import torch
+import torch.nn.functional as F
 from threestudio.systems.base import BaseLift3DSystem
 from threestudio.utils.misc import cleanup, get_device
 from threestudio.utils.ops import binary_cross_entropy, dot
@@ -32,7 +33,12 @@ class MVDreamInpaintSystem(BaseLift3DSystem):
     def training_step(self, batch, batch_idx):
         out = self(batch)
 
+        
+       # loss = 0.5 * F.mse_loss(out["comp_rgb"], batch['gt_rgb'], reduction="sum") / out["comp_rgb"].shape[0]
+       # return {"loss": loss}
         guidance_out = self.guidance(out["comp_rgb"], self.prompt_utils, **batch)
+       # torch.cuda.empty_cache()
+       # gc.collect()
 
         loss = 0.0
 
