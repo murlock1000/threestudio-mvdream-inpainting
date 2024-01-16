@@ -214,7 +214,7 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
             )
 
             latents_recon = torch.stack((mvlatents_recon[0], og_rgb_latents[1], og_rgb_latents[2], og_rgb_latents[3]))
-            #latents_recon = og_rgb_latents#torch.stack((og_rgb_latents[0], og_rgb_latents[1], og_rgb_latents[2], og_rgb_latents[3]))
+           # latents_recon = og_rgb_latents#torch.stack((og_rgb_latents[0], og_rgb_latents[1], og_rgb_latents[2], og_rgb_latents[3]))
 
             # clip or rescale x0
             if self.cfg.recon_std_rescale > 0:

@@ -86,6 +86,7 @@ class MVDreamMultiviewDataset(Dataset):
         h = camera_dict["h"]
         aabb_scale = camera_dict["aabb_scale"]
 
+        self.cfg.input_size = 256
         wScale = self.cfg.crop_to // self.cfg.input_size
         hScale = self.cfg.crop_to // self.cfg.input_size
 
@@ -128,8 +129,8 @@ class MVDreamMultiviewDataset(Dataset):
             frames_img.append(img)
 
             direction: Float[Tensor, "H W 3"] = get_ray_directions(
-                32,#self.frame_h,32
-                32,#self.frame_w,32
+                self.frame_h,
+                self.frame_w,
                 (intrinsic[0, 0], intrinsic[1, 1]),
                 (intrinsic[0, 2], intrinsic[1, 2]),
                 use_pixel_centers=False,
@@ -227,6 +228,8 @@ class MVDreamMultiviewIterableDataset(IterableDataset):
         h = camera_dict["h"]
         aabb_scale = camera_dict["aabb_scale"]
 
+        self.cfg.input_size = 32
+
         wScale = self.cfg.crop_to // self.cfg.input_size
         hScale = self.cfg.crop_to // self.cfg.input_size
 
@@ -236,7 +239,7 @@ class MVDreamMultiviewIterableDataset(IterableDataset):
         frames_direction = []
         frames_img = []
 
-        self.frame_w = self.cfg.input_size
+        self.frame_w = self.cfg.input_size 
         self.frame_h = self.cfg.input_size
         threestudio.info("Loading frames...")
         self.n_frames = len(frames)
@@ -264,13 +267,13 @@ class MVDreamMultiviewIterableDataset(IterableDataset):
             
             img = crop_center(img, self.cfg.crop_to, self.cfg.crop_to)
 
-            img = cv2.resize(img, (32, 32))#(self.frame_w, self.frame_h))
+            img = cv2.resize(img, (self.frame_w, self.frame_h))
             img: Float[Tensor, "H W 3"] = torch.FloatTensor(img) / 255
             frames_img.append(img)
 
             direction: Float[Tensor, "H W 3"] = get_ray_directions(
-                32,#self.frame_h, 32
-                32,#self.frame_w, 32
+                self.frame_h,
+                self.frame_w,
                 (intrinsic[0, 0], intrinsic[1, 1]),
                 (intrinsic[0, 2], intrinsic[1, 2]),
                 use_pixel_centers=False,
@@ -365,11 +368,11 @@ class MVDreamMultiviewCameraDataModule(pl.LightningDataModule):
 
     def setup(self, stage=None) -> None:
         if stage in [None, "fit"]:
-            self.train_dataset = MVDreamMultiviewIterableDataset(self.cfg, "val")
+            self.train_dataset = MVDreamMultiviewIterableDataset(self.cfg, "train16")
         if stage in [None, "fit", "validate"]:
-            self.val_dataset = MVDreamMultiviewDataset(self.cfg, "valT")
+            self.val_dataset = MVDreamMultiviewDataset(self.cfg, "val16")
         if stage in [None, "test", "predict"]:
-            self.test_dataset = MVDreamMultiviewDataset(self.cfg, "train")
+            self.test_dataset = MVDreamMultiviewDataset(self.cfg, "test")
 
     def prepare_data(self):
         pass
