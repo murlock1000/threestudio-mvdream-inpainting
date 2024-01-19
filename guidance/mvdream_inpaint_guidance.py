@@ -96,6 +96,7 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
         #elevation: Float[Tensor, "B"],
         #azimuth: Float[Tensor, "B"],
         #camera_distances: Float[Tensor, "B"],
+        novel_frame_count,
         c2w: Float[Tensor, "B 4 4"],
         mask: Float[Tensor, "B H W C"] = None,
         rgb_as_latents: bool = False,
@@ -110,7 +111,6 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
 
         rgb_BCHW = rgb.permute(0, 3, 1, 2)
         gt_rgb_BCHW = gt_rgb.permute(0, 3, 1, 2)
-
                
         if text_embeddings is None:
             text_embeddings = prompt_utils.get_text_embeddings(
@@ -167,6 +167,12 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
 
         # predict the noise residual with unet, NO grad!
         with torch.no_grad():
+
+            # Setup inpainting tile mask to unmask novel views
+            mask = torch.ones(latents.shape, device=latents.device)
+            mask[np.arange(novel_frame_count), :, :, :] = 0
+
+            # Should mimic p_sample_ddim - but missing unconditional_conditioning?
             # add noise
             noise = torch.randn_like(latents)
             
@@ -213,7 +219,7 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
                 latents_noisy, t, noise_pred
             )
 
-            latents_recon = torch.stack((mvlatents_recon[0], og_rgb_latents[1], og_rgb_latents[2], og_rgb_latents[3]))
+            latents_recon = torch.stack((mvlatents_recon[0], og_rgb_latents[0], og_rgb_latents[1], og_rgb_latents[2]))
            # latents_recon = og_rgb_latents#torch.stack((og_rgb_latents[0], og_rgb_latents[1], og_rgb_latents[2], og_rgb_latents[3]))
 
             # clip or rescale x0

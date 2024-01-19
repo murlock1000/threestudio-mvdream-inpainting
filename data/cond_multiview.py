@@ -204,6 +204,126 @@ class MVDreamMultiviewDataset(Dataset):
         batch.update({"height": self.frame_h, "width": self.frame_w})
         return batch
 
+class NovelFrames():
+    def fibonacci_northern_hemisphere(samples=1000):
+        samples = samples * 2
+        points = []
+        phi = math.pi * (math.sqrt(5.) - 1.)  # golden angle in radians
+
+        for i in range(samples//2):
+            y = 1 - (i / float(samples - 1)) * 2  # y goes from 1 to -1
+            radius = math.sqrt(1 - y**2)  # radius at y
+
+            theta = phi * i  # golden angle increment
+
+            x = math.cos(theta) * radius
+            z = math.sin(theta) * radius
+
+            z, y = y, z
+            points.append((x, y, z))
+
+        return points
+
+    def create_camera_to_world_matrix_fib(position):
+        position /= np.linalg.norm(position)
+
+        # Calculate camera position, target, and up vectors
+        camera_pos = position
+        target = np.array([0, 0, 0])
+        up = np.array([0, 1, 0])
+
+        # Construct view matrix
+        forward = target - camera_pos
+        forward /= np.linalg.norm(forward)
+        right = np.cross(forward, up)
+        right /= np.linalg.norm(right)
+        new_up = np.cross(right, forward)
+        new_up /= np.linalg.norm(new_up)
+        cam2world = np.eye(4)
+        cam2world[:3, :3] = np.array([right, new_up, -forward]).T
+        cam2world[:3, 3] = camera_pos
+        return torch.as_tensor(
+                cam2world, dtype=torch.float32
+        )
+
+    def __init__(self, cfg, camera_dict, num_poses=100):
+        self.cfg: MVDreamMultiviewsDataModuleConfig = cfg
+
+        fl_x = camera_dict["fl_x"]
+        fl_y = camera_dict["fl_y"]
+        cx = camera_dict["cx"]
+        cy = camera_dict["cy"]
+
+        self.cfg.input_size = 32
+
+        wScale = self.cfg.crop_to // self.cfg.input_size
+        hScale = self.cfg.crop_to // self.cfg.input_size
+
+        frames_proj = []
+        frames_c2w = []
+        frames_position = []
+        frames_direction = []
+        frames_img = []
+
+        self.frame_w = self.cfg.input_size 
+        self.frame_h = self.cfg.input_size
+
+        threestudio.info("Generating novel frames...")
+        self.n_frames = num_poses
+
+        positions = NovelFrames.fibonacci_northern_hemisphere(self.n_frames)
+        autogen_sampled_poses = [NovelFrames.create_camera_to_world_matrix_fib(pos) for pos in positions]
+
+        c2w_list = torch.stack(autogen_sampled_poses, dim=0)
+
+        for idx in range(self.n_frames):
+            intrinsic: Float[Tensor, "4 4"] = torch.eye(4)
+            intrinsic[0, 0] = fl_x / wScale
+            intrinsic[1, 1] = fl_y / hScale
+            intrinsic[0, 2] = cx / wScale
+            intrinsic[1, 2] = cy / hScale
+
+            direction: Float[Tensor, "H W 3"] = get_ray_directions(
+                self.frame_h,
+                self.frame_w,
+                (intrinsic[0, 0], intrinsic[1, 1]),
+                (intrinsic[0, 2], intrinsic[1, 2]),
+                use_pixel_centers=False,
+            )
+
+            c2w = c2w_list[idx]
+            camera_position: Float[Tensor, "3"] = c2w[:3, 3:].reshape(-1)
+            near = 0.1
+            far = 1000.0
+            proj = convert_proj(intrinsic, self.frame_h, self.frame_w, near, far)
+            proj: Float[Tensor, "4 4"] = torch.FloatTensor(proj)
+            frames_proj.append(proj)
+            frames_c2w.append(c2w)
+            frames_position.append(camera_position)
+            frames_direction.append(direction)
+            frames_img.append(torch.tensor([]))
+
+        self.frames_proj: Float[Tensor, "B 4 4"] = torch.stack(frames_proj, dim=0)
+        self.frames_c2w: Float[Tensor, "B 4 4"] = torch.stack(frames_c2w, dim=0)
+        self.frames_position: Float[Tensor, "B 3"] = torch.stack(frames_position, dim=0)
+        self.frames_direction: Float[Tensor, "B H W 3"] = torch.stack(
+            frames_direction, dim=0
+        )
+        self.frames_img: Float[Tensor, "B H W 3"] = torch.stack(frames_img, dim=0)
+
+        self.rays_o, self.rays_d = get_rays(
+            self.frames_direction,
+            self.frames_c2w,
+            keepdim=True,
+            normalize=self.cfg.rays_d_normalize,
+        )
+        self.mvp_mtx: Float[Tensor, "B 4 4"] = get_mvp_matrix(
+            self.frames_c2w, self.frames_proj
+        )
+        self.light_positions: Float[Tensor, "B 3"] = torch.zeros_like(
+            self.frames_position
+        )
+
 class MVDreamMultiviewIterableDataset(IterableDataset):
     def __init__(self, cfg: Any, split: str) -> None:
         super().__init__()
@@ -322,6 +442,8 @@ class MVDreamMultiviewIterableDataset(IterableDataset):
 
         self.batch_size: int = self.batch_sizes[0]
 
+        self.novel_frames = NovelFrames(self.cfg, camera_dict, 100)
+
     def __iter__(self):
         while True:
             yield {}
@@ -332,29 +454,35 @@ class MVDreamMultiviewIterableDataset(IterableDataset):
         ), f"batch_size ({self.batch_size}) must be dividable by n_view ({self.cfg.n_view})!"
         real_batch_size = self.batch_size // self.cfg.n_view
 
-        if self.split == "train":
-            train = torch.randint(0, 16, (3,)) 
-            novel = torch.randint(16, self.n_frames, (1,))
-            index = torch.cat((novel, train))
-        else:
-            index = torch.randint(0, self.n_frames, (4,))
+        # Use 3 GT images from train set and 1 novel view in batch for guidance: [novel, gt, gt, gt]
+        train_indexes = torch.randperm(self.n_frames)[:3]
+        index = torch.cat((torch.tensor([-1]), train_indexes))
 
+        #if self.split == "train":
+        #    train = torch.randint(0, 16, (3,)) 
+        #    novel = torch.randint(16, self.n_frames, (1,))
+        #    index = torch.cat((novel, train))
+        #else:
+        #    index = torch.randint(0, self.n_frames, (4,))
+
+        novel_idx = torch.randint(self.novel_frames.n_frames, (1,))
 
         return {
             "index": index,
-            "rays_o": self.rays_o[index],
-            "rays_d": self.rays_d[index],
-            "mvp_mtx": self.mvp_mtx[index],
-            "c2w": self.frames_c2w[index],
-            "camera_positions": self.frames_position[index],
-            "light_positions": self.light_positions[index],
-            "gt_rgb": self.frames_img[index],
+            "rays_o": torch.cat((self.novel_frames.rays_o[novel_idx], self.rays_o[train_indexes])),
+            "rays_d": torch.cat((self.novel_frames.rays_d[novel_idx], self.rays_d[train_indexes])),
+            "mvp_mtx": torch.cat((self.novel_frames.mvp_mtx[novel_idx], self.mvp_mtx[train_indexes])),
+            "c2w": torch.cat((self.novel_frames.frames_c2w[novel_idx], self.frames_c2w[train_indexes])),
+            "camera_positions": torch.cat((self.novel_frames.frames_position[novel_idx], self.frames_position[train_indexes])),
+            "light_positions": torch.cat((self.novel_frames.light_positions[novel_idx], self.light_positions[train_indexes])),
+            "gt_rgb": self.frames_img[train_indexes],
             "height": self.frame_h,
             "width": self.frame_w,
             "elevation": None,
             "azimuth": None,
             "camera_distances": None,
-            "fovy": None # Not used by model for camera conditioning
+            "fovy": None, # Not used by model for camera conditioning
+            "novel_frame_count": 1,
         }
 
 
