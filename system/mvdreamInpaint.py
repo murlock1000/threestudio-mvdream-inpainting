@@ -8,7 +8,7 @@ from threestudio.systems.base import BaseLift3DSystem
 from threestudio.utils.misc import cleanup, get_device
 from threestudio.utils.ops import binary_cross_entropy, dot
 from threestudio.utils.typing import *
-
+import tinycudann as tcnn
 
 @threestudio.register("mvdream-inpaint-system")
 class MVDreamInpaintSystem(BaseLift3DSystem):
@@ -37,8 +37,9 @@ class MVDreamInpaintSystem(BaseLift3DSystem):
        # loss = 0.5 * F.mse_loss(out["comp_rgb"], batch['gt_rgb'], reduction="sum") / out["comp_rgb"].shape[0]
        # return {"loss": loss}
         guidance_out = self.guidance(out["comp_rgb"], self.prompt_utils, **batch)
-       # torch.cuda.empty_cache()
-       # gc.collect()
+        gc.collect()
+        torch.cuda.empty_cache()
+        #tcnn.free_temporary_memory()
 
         loss = 0.0
 

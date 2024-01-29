@@ -98,6 +98,7 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
         #camera_distances: Float[Tensor, "B"],
         novel_frame_count,
         c2w: Float[Tensor, "B 4 4"],
+        transparency_masks: Float[Tensor, "B H W 3"],
         mask: Float[Tensor, "B H W C"] = None,
         rgb_as_latents: bool = False,
         fovy=None,
@@ -108,6 +109,9 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
     ):
         batch_size = rgb.shape[0]
         camera = c2w
+
+        if novel_frame_count == 0:
+            gt_rgb = rgb * transparency_masks + (1. - transparency_masks) * gt_rgb
 
         rgb_BCHW = rgb.permute(0, 3, 1, 2)
         gt_rgb_BCHW = gt_rgb.permute(0, 3, 1, 2)
@@ -151,6 +155,21 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
                 # encode image into latents with vae, requires grad!
         og_rgb_latents = self.encode_images(pred_gt_rgb)
 
+        if novel_frame_count ==0:
+            # x0-reconstruction loss from Sec 3.2 and Appendix
+            latents_recon = og_rgb_latents
+            loss = (
+                0.5
+                * F.mse_loss(latents, latents_recon, reduction="sum")
+                / latents.shape[0]
+            )
+            grad = torch.autograd.grad(loss, latents, retain_graph=True)[0]
+
+            return {
+                "loss_sds": loss,
+                "grad_norm": grad.norm(),
+            }
+    
          # sample timestep
         if timestep is None:
             t = torch.randint(
@@ -167,7 +186,6 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
 
         # predict the noise residual with unet, NO grad!
         with torch.no_grad():
-
             # Setup inpainting tile mask to unmask novel views
             mask = torch.ones(latents.shape, device=latents.device)
             mask[np.arange(novel_frame_count), :, :, :] = 0
@@ -175,16 +193,17 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
             # Should mimic p_sample_ddim - but missing unconditional_conditioning?
             # add noise
             noise = torch.randn_like(latents)
-            
+            mask = None
+
             # forward pass unmasked regions
             if mask is not None:
                 latents_orig = self.model.q_sample(latents, t, noise)
                 latents_noisy = latents_orig * mask + (1. - mask) * latents
             else:
                 latents_noisy = self.model.q_sample(latents, t, noise)
-
             # pred noise
             latent_model_input = torch.cat([latents_noisy] * 2)
+
             # save input tensors for UNet
             if camera is not None:
                 camera = self.get_camera_cond(camera, fovy)
@@ -218,8 +237,9 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
             mvlatents_recon = self.model.predict_start_from_noise(
                 latents_noisy, t, noise_pred
             )
-
-            latents_recon = torch.stack((mvlatents_recon[0], og_rgb_latents[0], og_rgb_latents[1], og_rgb_latents[2]))
+            
+            latents_recon = torch.stack((mvlatents_recon[:novel_frame_count], og_rgb_latents[novel_frame_count:])) # All masked novel views
+            #latents_recon = torch.stack((mvlatents_recon[0], og_rgb_latents[0], og_rgb_latents[1], og_rgb_latents[2])) #Single novel view
            # latents_recon = og_rgb_latents#torch.stack((og_rgb_latents[0], og_rgb_latents[1], og_rgb_latents[2], og_rgb_latents[3]))
 
             # clip or rescale x0

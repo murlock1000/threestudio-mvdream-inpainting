@@ -7,18 +7,22 @@ data_type: "mvdream-multiview-camera-datamodule"
 data:
   batch_size: [4,4]
   n_view: 4
-  input_size: 256
+  input_size: 32
   crop_to: 1024
   rays_d_normalize: true
-  train_downsample_resolution: 16
-  eval_downsample_resolution: 16
+  train_downsample_resolution: 16 #Not used
+  eval_downsample_resolution: 16 #Not used
   dataroot: ???
+
+  # Random Camera Dataset for val/test poses
+ #n_val_views: 4
+
 
 system_type: "mvdream-inpaint-system"
 system:
   geometry_type: "implicit-volume"
   geometry:
-    radius: 1.0
+    radius: 0.35
     normal_type: null
 
     density_bias: "blob_magic3d"

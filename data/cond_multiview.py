@@ -82,13 +82,13 @@ class MVDreamMultiviewDataset(Dataset):
         p2 = camera_dict["p2"]
         cx = camera_dict["cx"]
         cy = camera_dict["cy"]
-        w = camera_dict["w"]
-        h = camera_dict["h"]
+        w = camera_dict["w"] # 1440
+        h = camera_dict["h"] # 1080
         aabb_scale = camera_dict["aabb_scale"]
 
         self.cfg.input_size = 256
-        wScale = self.cfg.crop_to // self.cfg.input_size
-        hScale = self.cfg.crop_to // self.cfg.input_size
+        wScale =  self.cfg.crop_to // self.cfg.input_size
+        hScale =  self.cfg.crop_to // self.cfg.input_size
 
         frames_proj = []
         frames_c2w = []
@@ -114,10 +114,10 @@ class MVDreamMultiviewDataset(Dataset):
 
         for idx, frame in enumerate(frames):
             intrinsic: Float[Tensor, "4 4"] = torch.eye(4)
-            intrinsic[0, 0] = fl_x / wScale
-            intrinsic[1, 1] = fl_y / hScale
-            intrinsic[0, 2] = cx / wScale
-            intrinsic[1, 2] = cy / hScale
+            intrinsic[0, 0] = fl_x / wScale # Cropping does not change focal point, scaling does.
+            intrinsic[1, 1] = fl_y / hScale 
+            intrinsic[0, 2] = (cx - (w-self.cfg.crop_to)/2) / wScale # Cropping reduces cx,cy by pixels cropped in top and left.
+            intrinsic[1, 2] = (cy - (h-self.cfg.crop_to)/2) / hScale
 
             frame_path = os.path.join(self.cfg.dataroot, frame["file_path"]+".png")
             img = cv2.imread(frame_path)[:, :, ::-1].copy()
@@ -125,6 +125,7 @@ class MVDreamMultiviewDataset(Dataset):
             img = crop_center(img, self.cfg.crop_to, self.cfg.crop_to)
 
             img = cv2.resize(img, (self.frame_w, self.frame_h))
+
             img: Float[Tensor, "H W 3"] = torch.FloatTensor(img) / 255
             frames_img.append(img)
 
@@ -253,8 +254,10 @@ class NovelFrames():
         fl_y = camera_dict["fl_y"]
         cx = camera_dict["cx"]
         cy = camera_dict["cy"]
+        w = camera_dict["w"]
+        h = camera_dict["h"]
 
-        self.cfg.input_size = 32
+        #self.cfg.input_size = 32
 
         wScale = self.cfg.crop_to // self.cfg.input_size
         hScale = self.cfg.crop_to // self.cfg.input_size
@@ -278,10 +281,10 @@ class NovelFrames():
 
         for idx in range(self.n_frames):
             intrinsic: Float[Tensor, "4 4"] = torch.eye(4)
-            intrinsic[0, 0] = fl_x / wScale
-            intrinsic[1, 1] = fl_y / hScale
-            intrinsic[0, 2] = cx / wScale
-            intrinsic[1, 2] = cy / hScale
+            intrinsic[0, 0] = fl_x / wScale # Cropping does not change focal point, scaling does.
+            intrinsic[1, 1] = fl_y / hScale 
+            intrinsic[0, 2] = (cx - (w-self.cfg.crop_to)/2) / wScale # Cropping reduces cx,cy by pixels cropped in top and left.
+            intrinsic[1, 2] = (cy - (h-self.cfg.crop_to)/2) / hScale
 
             direction: Float[Tensor, "H W 3"] = get_ray_directions(
                 self.frame_h,
@@ -348,7 +351,7 @@ class MVDreamMultiviewIterableDataset(IterableDataset):
         h = camera_dict["h"]
         aabb_scale = camera_dict["aabb_scale"]
 
-        self.cfg.input_size = 32
+        #self.cfg.input_size = 32
 
         wScale = self.cfg.crop_to // self.cfg.input_size
         hScale = self.cfg.crop_to // self.cfg.input_size
@@ -358,6 +361,7 @@ class MVDreamMultiviewIterableDataset(IterableDataset):
         frames_position = []
         frames_direction = []
         frames_img = []
+        transparency_masks = []
 
         self.frame_w = self.cfg.input_size 
         self.frame_h = self.cfg.input_size
@@ -377,17 +381,24 @@ class MVDreamMultiviewIterableDataset(IterableDataset):
 
         for idx, frame in enumerate(frames):
             intrinsic: Float[Tensor, "4 4"] = torch.eye(4)
-            intrinsic[0, 0] = fl_x / wScale
-            intrinsic[1, 1] = fl_y / hScale
-            intrinsic[0, 2] = cx / wScale
-            intrinsic[1, 2] = cy / hScale
+            intrinsic[0, 0] = fl_x / wScale # Cropping does not change focal point, scaling does.
+            intrinsic[1, 1] = fl_y / hScale 
+            intrinsic[0, 2] = (cx - (w-self.cfg.crop_to)/2) / wScale # Cropping reduces cx,cy by pixels cropped in top and left.
+            intrinsic[1, 2] = (cy - (h-self.cfg.crop_to)/2) / hScale
 
             frame_path = os.path.join(self.cfg.dataroot, frame["file_path"]+".png")
-            img = cv2.imread(frame_path)[:, :, ::-1].copy()
+            img = cv2.imread(frame_path)
             
             img = crop_center(img, self.cfg.crop_to, self.cfg.crop_to)
 
             img = cv2.resize(img, (self.frame_w, self.frame_h))
+
+            transparency_mask = img[:, :, -1].copy()
+            transparency_mask: Float[Tensor, "H W 3"] = torch.FloatTensor(transparency_mask == 0).unsqueeze(dim=-1) # Boolean transparency mask
+            transparency_masks.append(transparency_mask)
+
+            img = img[:, :, ::-1].copy()
+
             img: Float[Tensor, "H W 3"] = torch.FloatTensor(img) / 255
             frames_img.append(img)
 
@@ -420,6 +431,7 @@ class MVDreamMultiviewIterableDataset(IterableDataset):
             frames_direction, dim=0
         )
         self.frames_img: Float[Tensor, "B H W 3"] = torch.stack(frames_img, dim=0)
+        self.transparency_masks: Float[Tensor, "B H W 3"] = torch.stack(transparency_masks, dim=0)
 
         self.rays_o, self.rays_d = get_rays(
             self.frames_direction,
@@ -454,10 +466,15 @@ class MVDreamMultiviewIterableDataset(IterableDataset):
         ), f"batch_size ({self.batch_size}) must be dividable by n_view ({self.cfg.n_view})!"
         real_batch_size = self.batch_size // self.cfg.n_view
 
-        # Use 3 GT images from train set and 1 novel view in batch for guidance: [novel, gt, gt, gt]
-        train_indexes = torch.randperm(self.n_frames)[:3]
-        index = torch.cat((torch.tensor([-1]), train_indexes))
-
+        # Use 1 GT images from train set and 1 novel view in batch for guidance: [novel, gt, gt, gt]
+        novel_frame_count = 0
+        if novel_frame_count < self.cfg.n_view:
+            train_indexes = torch.randperm(self.n_frames)[:(self.cfg.n_view-novel_frame_count)]
+            index = torch.cat((torch.tensor([-1]), train_indexes))
+        else:
+            train_indexes = []
+            index = 0
+    
         #if self.split == "train":
         #    train = torch.randint(0, 16, (3,)) 
         #    novel = torch.randint(16, self.n_frames, (1,))
@@ -465,7 +482,10 @@ class MVDreamMultiviewIterableDataset(IterableDataset):
         #else:
         #    index = torch.randint(0, self.n_frames, (4,))
 
-        novel_idx = torch.randint(self.novel_frames.n_frames, (1,))
+        if novel_frame_count != 0:
+            novel_idx = torch.randint(self.novel_frames.n_frames, (novel_frame_count,))
+        else:
+            novel_idx = []
 
         return {
             "index": index,
@@ -475,6 +495,7 @@ class MVDreamMultiviewIterableDataset(IterableDataset):
             "c2w": torch.cat((self.novel_frames.frames_c2w[novel_idx], self.frames_c2w[train_indexes])),
             "camera_positions": torch.cat((self.novel_frames.frames_position[novel_idx], self.frames_position[train_indexes])),
             "light_positions": torch.cat((self.novel_frames.light_positions[novel_idx], self.light_positions[train_indexes])),
+            "transparency_masks": self.transparency_masks[train_indexes],
             "gt_rgb": self.frames_img[train_indexes],
             "height": self.frame_h,
             "width": self.frame_w,
@@ -482,7 +503,7 @@ class MVDreamMultiviewIterableDataset(IterableDataset):
             "azimuth": None,
             "camera_distances": None,
             "fovy": None, # Not used by model for camera conditioning
-            "novel_frame_count": 1,
+            "novel_frame_count": novel_frame_count,
         }
 
 
@@ -498,8 +519,10 @@ class MVDreamMultiviewCameraDataModule(pl.LightningDataModule):
         if stage in [None, "fit"]:
             self.train_dataset = MVDreamMultiviewIterableDataset(self.cfg, "train16")
         if stage in [None, "fit", "validate"]:
+            #self.val_dataset = RandomCameraDataset(self.cfg, "val")
             self.val_dataset = MVDreamMultiviewDataset(self.cfg, "val16")
         if stage in [None, "test", "predict"]:
+            #self.test_dataset = RandomCameraDataset(self.cfg, "test")
             self.test_dataset = MVDreamMultiviewDataset(self.cfg, "test")
 
     def prepare_data(self):

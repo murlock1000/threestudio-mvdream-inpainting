@@ -36,6 +36,8 @@ class RandomMultiviewCameraDataModuleConfig(RandomCameraDataModuleConfig):
     rays_d_normalize: bool = True
 
 
+c2w_quadruplets = []
+
 class RandomMultiviewCameraIterableDataset(RandomCameraIterableDataset):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -244,6 +246,9 @@ class RandomMultiviewCameraIterableDataset(RandomCameraIterableDataset):
         )  # FIXME: hard-coded near and far
         mvp_mtx: Float[Tensor, "B 4 4"] = get_mvp_matrix(c2w, proj_mtx)
 
+       # global c2w_quadruplets
+        #c2w_quadruplets.append(c2w)
+
         return {
             "rays_o": rays_o,
             "rays_d": rays_d,
@@ -259,6 +264,10 @@ class RandomMultiviewCameraIterableDataset(RandomCameraIterableDataset):
             "fovy": fovy,
         }
 
+
+def write_c2w():
+    global c2w_quadruplets
+    torch.save(c2w_quadruplets, 'c2w_quadruplets.pt')
 
 @register("mvdream-random-multiview-camera-datamodule")
 class RandomMultiviewCameraDataModule(pl.LightningDataModule):
