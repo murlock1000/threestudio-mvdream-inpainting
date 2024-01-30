@@ -33,9 +33,43 @@ from torch.utils.data import DataLoader, Dataset, IterableDataset
 
 @dataclass
 class MVDreamMultiviewsDataModuleConfig(MultiviewsDataModuleConfig):
+    # Dataset parameters
     n_view: int = 4
     crop_to: int = 1024
     input_size: int = 256
+    novel_frame_count: int = 1
+    train_split: str = "train"
+
+    # Random camera parameters
+    zoom_range: Tuple[float, float] = (1.0, 1.0)
+    rays_d_normalize: bool = True
+    height: Any = 64
+    width: Any = 64
+    batch_size: Any = 1
+    resolution_milestones: List[int] = field(default_factory=lambda: [])
+    eval_height: int = 512
+    eval_width: int = 512
+    eval_batch_size: int = 1
+    n_val_views: int = 1
+    n_test_views: int = 120
+    elevation_range: Tuple[float, float] = (-10, 90)
+    azimuth_range: Tuple[float, float] = (-180, 180)
+    camera_distance_range: Tuple[float, float] = (1, 1.5)
+    fovy_range: Tuple[float, float] = (
+        40,
+        70,
+    )  # in degrees, in vertical direction (along height)
+    camera_perturb: float = 0.1
+    center_perturb: float = 0.2
+    up_perturb: float = 0.02
+    light_position_perturb: float = 1.0
+    light_distance_range: Tuple[float, float] = (0.8, 1.5)
+    eval_elevation_deg: float = 15.0
+    eval_camera_distance: float = 1.5
+    eval_fovy_deg: float = 70.0
+    light_sample_strategy: str = "dreamfusion"
+    batch_uniform_azimuth: bool = True
+    progressive_until: int = 0  # progressive ranges for elevation, azimuth, r, fovy
 
 def normalize_camera(camera_matrix):
     ''' normalize the camera location onto a unit-sphere'''
@@ -454,7 +488,7 @@ class MVDreamMultiviewIterableDataset(IterableDataset):
 
         self.batch_size: int = self.batch_sizes[0]
 
-        self.novel_frames = NovelFrames(self.cfg, camera_dict, 100)
+        self.novel_frames = NovelFrames(self.cfg, camera_dict, 1000)
 
     def __iter__(self):
         while True:
@@ -467,9 +501,8 @@ class MVDreamMultiviewIterableDataset(IterableDataset):
         real_batch_size = self.batch_size // self.cfg.n_view
 
         # Use 1 GT images from train set and 1 novel view in batch for guidance: [novel, gt, gt, gt]
-        novel_frame_count = 0
-        if novel_frame_count < self.cfg.n_view:
-            train_indexes = torch.randperm(self.n_frames)[:(self.cfg.n_view-novel_frame_count)]
+        if self.cfg.novel_frame_count < self.cfg.n_view:
+            train_indexes = torch.randperm(self.n_frames)[:(self.cfg.n_view-self.cfg.novel_frame_count)]
             index = torch.cat((torch.tensor([-1]), train_indexes))
         else:
             train_indexes = []
@@ -482,8 +515,8 @@ class MVDreamMultiviewIterableDataset(IterableDataset):
         #else:
         #    index = torch.randint(0, self.n_frames, (4,))
 
-        if novel_frame_count != 0:
-            novel_idx = torch.randint(self.novel_frames.n_frames, (novel_frame_count,))
+        if self.cfg.novel_frame_count != 0:
+            novel_idx = torch.randint(self.novel_frames.n_frames, (self.cfg.novel_frame_count,))
         else:
             novel_idx = []
 
@@ -503,7 +536,7 @@ class MVDreamMultiviewIterableDataset(IterableDataset):
             "azimuth": None,
             "camera_distances": None,
             "fovy": None, # Not used by model for camera conditioning
-            "novel_frame_count": novel_frame_count,
+            "novel_frame_count": self.cfg.novel_frame_count,
         }
 
 
@@ -517,13 +550,13 @@ class MVDreamMultiviewCameraDataModule(pl.LightningDataModule):
 
     def setup(self, stage=None) -> None:
         if stage in [None, "fit"]:
-            self.train_dataset = MVDreamMultiviewIterableDataset(self.cfg, "train16")
+            self.train_dataset = MVDreamMultiviewIterableDataset(self.cfg, self.cfg.train_split)
         if stage in [None, "fit", "validate"]:
-            #self.val_dataset = RandomCameraDataset(self.cfg, "val")
-            self.val_dataset = MVDreamMultiviewDataset(self.cfg, "val16")
+            self.val_dataset = RandomCameraDataset(self.cfg, "val")
+            #self.val_dataset = MVDreamMultiviewDataset(self.cfg, "val16")
         if stage in [None, "test", "predict"]:
-            #self.test_dataset = RandomCameraDataset(self.cfg, "test")
-            self.test_dataset = MVDreamMultiviewDataset(self.cfg, "test")
+            self.test_dataset = RandomCameraDataset(self.cfg, "test")
+            #self.test_dataset = MVDreamMultiviewDataset(self.cfg, "test")
 
     def prepare_data(self):
         pass

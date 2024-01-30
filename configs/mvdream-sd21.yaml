@@ -46,11 +46,19 @@ system:
     n_output_dims: 3
     color_activation: sigmoid
 
-  background_type: "mvdream-neural-environment-map-background"
+  #background_type: "mvdream-neural-environment-map-background"
+  #background:
+  #  color_activation: sigmoid
+  #  random_aug: true
+  #  share_aug_bg: true
+
+  background_type: "solid-color-background"
   background:
-    color_activation: sigmoid
-    random_aug: true
-    share_aug_bg: true
+    n_output_dims: 3
+    color: [1.0, 1.0, 1.0]
+    learned: False
+    random_aug: False
+    random_aug_prob: 0.5
 
   renderer_type: "nerf-volume-renderer"
   renderer:

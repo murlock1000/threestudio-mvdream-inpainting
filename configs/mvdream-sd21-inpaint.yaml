@@ -5,24 +5,39 @@ seed: 0
 
 data_type: "mvdream-multiview-camera-datamodule"
 data:
+  train_split: "train4"
   batch_size: [4,4]
   n_view: 4
-  input_size: 32
+  input_size: 128
   crop_to: 1024
   rays_d_normalize: true
+  novel_frame_count: 1 # Number of novel view tiles, where 0 
   train_downsample_resolution: 16 #Not used
   eval_downsample_resolution: 16 #Not used
   dataroot: ???
 
   # Random Camera Dataset for val/test poses
  #n_val_views: 4
+  # 0-4999: 64x64, >=5000: 256x256
+  width: [256, 256]
+  height: [256, 256]
+  resolution_milestones: [5000]
+  camera_distance_range: [0.8, 1.0] # relative
+  fovy_range: [15, 60]
+  elevation_range: [0, 30]
+  camera_perturb: 0.
+  center_perturb: 0.
+  up_perturb: 0.
+  n_val_views: 4
+  eval_camera_distance: 1.0
+  eval_fovy_deg: 40.
 
 
 system_type: "mvdream-inpaint-system"
 system:
   geometry_type: "implicit-volume"
   geometry:
-    radius: 0.35
+    radius: 0.3
     normal_type: null
 
     density_bias: "blob_magic3d"
@@ -43,11 +58,19 @@ system:
     n_output_dims: 3
     color_activation: sigmoid
 
-  background_type: "mvdream-neural-environment-map-background"
+  #background_type: "mvdream-neural-environment-map-background"
+  #background:
+  #  color_activation: sigmoid
+  #  random_aug: true
+  #  share_aug_bg: true
+  
+  background_type: "solid-color-background"
   background:
-    color_activation: sigmoid
-    random_aug: true
-    share_aug_bg: true
+    n_output_dims: 3
+    color: [1.0, 1.0, 1.0]
+    learned: False
+    random_aug: False
+    random_aug_prob: 0.5
 
   renderer_type: "nerf-volume-renderer"
   renderer:

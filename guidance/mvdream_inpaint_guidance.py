@@ -110,8 +110,9 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
         batch_size = rgb.shape[0]
         camera = c2w
 
-        if novel_frame_count == 0:
-            gt_rgb = rgb * transparency_masks + (1. - transparency_masks) * gt_rgb
+        transparency_on = False
+        if transparency_on:
+            gt_rgb = rgb[novel_frame_count:] * transparency_masks + (1. - transparency_masks) * gt_rgb
 
         rgb_BCHW = rgb.permute(0, 3, 1, 2)
         gt_rgb_BCHW = gt_rgb.permute(0, 3, 1, 2)
@@ -238,7 +239,7 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
                 latents_noisy, t, noise_pred
             )
             
-            latents_recon = torch.stack((mvlatents_recon[:novel_frame_count], og_rgb_latents[novel_frame_count:])) # All masked novel views
+            latents_recon = torch.cat((mvlatents_recon[:novel_frame_count], og_rgb_latents), dim=0) # All masked novel views
             #latents_recon = torch.stack((mvlatents_recon[0], og_rgb_latents[0], og_rgb_latents[1], og_rgb_latents[2])) #Single novel view
            # latents_recon = og_rgb_latents#torch.stack((og_rgb_latents[0], og_rgb_latents[1], og_rgb_latents[2], og_rgb_latents[3]))
 
