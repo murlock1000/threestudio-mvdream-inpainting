@@ -1,3 +1,4 @@
+import copy
 import json
 import math
 import os
@@ -31,6 +32,12 @@ from threestudio.utils.ops import (
 from threestudio.utils.typing import *
 from torch.utils.data import DataLoader, Dataset, IterableDataset
 
+c2w_quadruplets = []
+
+def write_c2w():
+    global c2w_quadruplets
+    torch.save(c2w_quadruplets, 'c2w_quadruplets.pt')
+
 @dataclass
 class MVDreamMultiviewsDataModuleConfig(MultiviewsDataModuleConfig):
     # Dataset parameters
@@ -40,7 +47,15 @@ class MVDreamMultiviewsDataModuleConfig(MultiviewsDataModuleConfig):
     novel_frame_count: int = 1
     train_split: str = "train"
 
+    enableLateMV: bool = True
+    startMVAt: int = 500
+    enableProbabilisticMV: bool = False
+    MVProbability: float = .5
+    use_fib_generator: bool = True
+    max_fib_poses: int = 1000
+
     # Random camera parameters
+    relative_radius: bool = True
     zoom_range: Tuple[float, float] = (1.0, 1.0)
     rays_d_normalize: bool = True
     height: Any = 64
@@ -94,6 +109,232 @@ def crop_center(img, w = 1024, h = 1024):
         y = center[0]/2 - h/2
 
         return img[int(y):int(y+h), int(x):int(x+w)]
+
+class RandomMultiviewCameraIterableDataset(RandomCameraIterableDataset):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.zoom_range = self.cfg.zoom_range
+
+    def collate(self, batch) -> Dict[str, Any]:
+        assert (
+            self.batch_size % self.cfg.n_view == 0
+        ), f"batch_size ({self.batch_size}) must be dividable by n_view ({self.cfg.n_view})!"
+        real_batch_size = self.batch_size // self.cfg.n_view
+
+        # sample elevation angles
+        elevation_deg: Float[Tensor, "B"]
+        elevation: Float[Tensor, "B"]
+        if random.random() < 0.5:
+            # sample elevation angles uniformly with a probability 0.5 (biased towards poles)
+            elevation_deg = (
+                torch.rand(real_batch_size)
+                * (self.elevation_range[1] - self.elevation_range[0])
+                + self.elevation_range[0]
+            ).repeat_interleave(self.cfg.n_view, dim=0)
+            elevation = elevation_deg * math.pi / 180
+        else:
+            # otherwise sample uniformly on sphere
+            elevation_range_percent = [
+                (self.elevation_range[0] + 90.0) / 180.0,
+                (self.elevation_range[1] + 90.0) / 180.0,
+            ]
+            # inverse transform sampling
+            elevation = torch.asin(
+                2
+                * (
+                    torch.rand(real_batch_size)
+                    * (elevation_range_percent[1] - elevation_range_percent[0])
+                    + elevation_range_percent[0]
+                )
+                - 1.0
+            ).repeat_interleave(self.cfg.n_view, dim=0)
+            elevation_deg = elevation / math.pi * 180.0
+
+        # sample azimuth angles from a uniform distribution bounded by azimuth_range
+        azimuth_deg: Float[Tensor, "B"]
+        # ensures sampled azimuth angles in a batch cover the whole range
+        azimuth_deg = (
+            torch.rand(real_batch_size).reshape(-1, 1)
+            + torch.arange(self.cfg.n_view).reshape(1, -1)
+        ).reshape(-1) / self.cfg.n_view * (
+            self.azimuth_range[1] - self.azimuth_range[0]
+        ) + self.azimuth_range[
+            0
+        ]
+        azimuth = azimuth_deg * math.pi / 180
+
+        ######## Different from original ########
+        # sample fovs from a uniform distribution bounded by fov_range
+        fovy_deg: Float[Tensor, "B"] = (
+            torch.rand(real_batch_size) * (self.fovy_range[1] - self.fovy_range[0])
+            + self.fovy_range[0]
+        ).repeat_interleave(self.cfg.n_view, dim=0)
+        fovy = fovy_deg * math.pi / 180
+
+        # sample distances from a uniform distribution bounded by distance_range
+        camera_distances: Float[Tensor, "B"] = (
+            torch.rand(real_batch_size)
+            * (self.camera_distance_range[1] - self.camera_distance_range[0])
+            + self.camera_distance_range[0]
+        ).repeat_interleave(self.cfg.n_view, dim=0)
+        if self.cfg.relative_radius:
+            scale = 1 / torch.tan(0.5 * fovy)
+            camera_distances = scale * camera_distances
+
+        # zoom in by decreasing fov after camera distance is fixed
+        zoom: Float[Tensor, "B"] = (
+            torch.rand(real_batch_size) * (self.zoom_range[1] - self.zoom_range[0])
+            + self.zoom_range[0]
+        ).repeat_interleave(self.cfg.n_view, dim=0)
+        fovy = fovy * zoom
+        fovy_deg = fovy_deg * zoom
+        ###########################################
+
+        # convert spherical coordinates to cartesian coordinates
+        # right hand coordinate system, x back, y right, z up
+        # elevation in (-90, 90), azimuth from +x to +y in (-180, 180)
+        camera_positions: Float[Tensor, "B 3"] = torch.stack(
+            [
+                camera_distances * torch.cos(elevation) * torch.cos(azimuth),
+                camera_distances * torch.cos(elevation) * torch.sin(azimuth),
+                camera_distances * torch.sin(elevation),
+            ],
+            dim=-1,
+        )
+
+        # default scene center at origin
+        center: Float[Tensor, "B 3"] = torch.zeros_like(camera_positions)
+        # default camera up direction as +z
+        up: Float[Tensor, "B 3"] = torch.as_tensor([0, 0, 1], dtype=torch.float32)[
+            None, :
+        ].repeat(self.batch_size, 1)
+
+        # sample camera perturbations from a uniform distribution [-camera_perturb, camera_perturb]
+        camera_perturb: Float[Tensor, "B 3"] = (
+            torch.rand(real_batch_size, 3) * 2 * self.cfg.camera_perturb
+            - self.cfg.camera_perturb
+        ).repeat_interleave(self.cfg.n_view, dim=0)
+        camera_positions = camera_positions + camera_perturb
+        # sample center perturbations from a normal distribution with mean 0 and std center_perturb
+        center_perturb: Float[Tensor, "B 3"] = (
+            torch.randn(real_batch_size, 3) * self.cfg.center_perturb
+        ).repeat_interleave(self.cfg.n_view, dim=0)
+        center = center + center_perturb
+        # sample up perturbations from a normal distribution with mean 0 and std up_perturb
+        up_perturb: Float[Tensor, "B 3"] = (
+            torch.randn(real_batch_size, 3) * self.cfg.up_perturb
+        ).repeat_interleave(self.cfg.n_view, dim=0)
+        up = up + up_perturb
+
+        # sample light distance from a uniform distribution bounded by light_distance_range
+        light_distances: Float[Tensor, "B"] = (
+            torch.rand(real_batch_size)
+            * (self.cfg.light_distance_range[1] - self.cfg.light_distance_range[0])
+            + self.cfg.light_distance_range[0]
+        ).repeat_interleave(self.cfg.n_view, dim=0)
+
+        if self.cfg.light_sample_strategy == "dreamfusion":
+            # sample light direction from a normal distribution with mean camera_position and std light_position_perturb
+            light_direction: Float[Tensor, "B 3"] = F.normalize(
+                camera_positions
+                + torch.randn(real_batch_size, 3).repeat_interleave(
+                    self.cfg.n_view, dim=0
+                )
+                * self.cfg.light_position_perturb,
+                dim=-1,
+            )
+            # get light position by scaling light direction by light distance
+            light_positions: Float[Tensor, "B 3"] = (
+                light_direction * light_distances[:, None]
+            )
+        elif self.cfg.light_sample_strategy == "magic3d":
+            # sample light direction within restricted angle range (pi/3)
+            local_z = F.normalize(camera_positions, dim=-1)
+            local_x = F.normalize(
+                torch.stack(
+                    [local_z[:, 1], -local_z[:, 0], torch.zeros_like(local_z[:, 0])],
+                    dim=-1,
+                ),
+                dim=-1,
+            )
+            local_y = F.normalize(torch.cross(local_z, local_x, dim=-1), dim=-1)
+            rot = torch.stack([local_x, local_y, local_z], dim=-1)
+            light_azimuth = (
+                torch.rand(real_batch_size) * math.pi - 2 * math.pi
+            ).repeat_interleave(
+                self.cfg.n_view, dim=0
+            )  # [-pi, pi]
+            light_elevation = (
+                torch.rand(real_batch_size) * math.pi / 3 + math.pi / 6
+            ).repeat_interleave(
+                self.cfg.n_view, dim=0
+            )  # [pi/6, pi/2]
+            light_positions_local = torch.stack(
+                [
+                    light_distances
+                    * torch.cos(light_elevation)
+                    * torch.cos(light_azimuth),
+                    light_distances
+                    * torch.cos(light_elevation)
+                    * torch.sin(light_azimuth),
+                    light_distances * torch.sin(light_elevation),
+                ],
+                dim=-1,
+            )
+            light_positions = (rot @ light_positions_local[:, :, None])[:, :, 0]
+        else:
+            raise ValueError(
+                f"Unknown light sample strategy: {self.cfg.light_sample_strategy}"
+            )
+
+        lookat: Float[Tensor, "B 3"] = F.normalize(center - camera_positions, dim=-1)
+        right: Float[Tensor, "B 3"] = F.normalize(torch.cross(lookat, up), dim=-1)
+        up = F.normalize(torch.cross(right, lookat), dim=-1)
+        c2w3x4: Float[Tensor, "B 3 4"] = torch.cat(
+            [torch.stack([right, up, -lookat], dim=-1), camera_positions[:, :, None]],
+            dim=-1,
+        )
+        c2w: Float[Tensor, "B 4 4"] = torch.cat(
+            [c2w3x4, torch.zeros_like(c2w3x4[:, :1])], dim=1
+        )
+        c2w[:, 3, 3] = 1.0
+
+        # get directions by dividing directions_unit_focal by focal length
+        focal_length: Float[Tensor, "B"] = 0.5 * self.height / torch.tan(0.5 * fovy)
+        directions: Float[Tensor, "B H W 3"] = self.directions_unit_focal[
+            None, :, :, :
+        ].repeat(self.batch_size, 1, 1, 1)
+        directions[:, :, :, :2] = (
+            directions[:, :, :, :2] / focal_length[:, None, None, None]
+        )
+
+        # Importance note: the returned rays_d MUST be normalized!
+        rays_o, rays_d = get_rays(
+            directions, c2w, keepdim=True, normalize=self.cfg.rays_d_normalize
+        )
+
+        proj_mtx: Float[Tensor, "B 4 4"] = get_projection_matrix(
+            fovy, self.width / self.height, 0.1, 1000.0
+        )  # FIXME: hard-coded near and far
+        mvp_mtx: Float[Tensor, "B 4 4"] = get_mvp_matrix(c2w, proj_mtx)
+
+        #global c2w_quadruplets
+        #c2w_quadruplets.append(c2w)
+
+        return {
+            "rays_o": rays_o,
+            "rays_d": rays_d,
+            "mvp_mtx": mvp_mtx,
+            "camera_positions": camera_positions,
+            "c2w": c2w,
+            "light_positions": light_positions,
+            "elevation": elevation_deg,
+            "azimuth": azimuth_deg,
+            "camera_distances": camera_distances,
+            "height": self.height,
+            "width": self.width,
+            "fovy": fovy,
+        }
 
 class MVDreamMultiviewDataset(Dataset):
    
@@ -240,6 +481,24 @@ class MVDreamMultiviewDataset(Dataset):
         return batch
 
 class NovelFrames():
+    # Using spherical cameras seems to break the model at the 202 iteration mark where it freezes.
+    def fibonacci_sphere(samples=1000):
+        points = []
+        phi = math.pi * (math.sqrt(5.) - 1.)  # golden angle in radians
+
+        for i in range(samples):
+            y = 1 - (i / float(samples - 1)) * 2  # y goes from 1 to -1
+            radius = math.sqrt(1 - y * y)  # radius at y
+
+            theta = phi * i  # golden angle increment
+
+            x = math.cos(theta) * radius
+            z = math.sin(theta) * radius
+
+            points.append((x, y, z))
+
+        return points
+
     def fibonacci_northern_hemisphere(samples=1000):
         samples = samples * 2
         points = []
@@ -369,6 +628,7 @@ class MVDreamMultiviewIterableDataset(IterableDataset):
         camera_dict = json.load(
             open(os.path.join(self.cfg.dataroot, f"transforms_{split}.json"), "r")
         )
+        self.train_step = 0
         self.split = split
         frames = camera_dict["frames"]
         camera_angle_x = camera_dict["camera_angle_x"]
@@ -488,7 +748,13 @@ class MVDreamMultiviewIterableDataset(IterableDataset):
 
         self.batch_size: int = self.batch_sizes[0]
 
-        self.novel_frames = NovelFrames(self.cfg, camera_dict, 1000)
+        if self.cfg.use_fib_generator:
+            self.novel_frames = NovelFrames(self.cfg, camera_dict, self.cfg.max_fib_poses)
+        else:
+            novel_cfg = copy.copy(self.cfg)
+            novel_cfg.width = [self.cfg.input_size, self.cfg.input_size]
+            novel_cfg.height = [self.cfg.input_size, self.cfg.input_size]
+            self.novel_generator = RandomMultiviewCameraIterableDataset(novel_cfg)
 
     def __iter__(self):
         while True:
@@ -500,9 +766,24 @@ class MVDreamMultiviewIterableDataset(IterableDataset):
         ), f"batch_size ({self.batch_size}) must be dividable by n_view ({self.cfg.n_view})!"
         real_batch_size = self.batch_size // self.cfg.n_view
 
+        self.train_step += 1
+        
+        novel_frame_count = self.cfg.novel_frame_count
+        if self.cfg.enableLateMV:
+            if self.train_step < self.cfg.startMVAt:
+                novel_frame_count = 0
+
+            if self.train_step >= 1300:
+                novel_frame_count = 0
+        
+        if self.cfg.enableProbabilisticMV:
+            if self.cfg.MVProbability > random.random():
+                novel_frame_count = 0
+            
+                
         # Use 1 GT images from train set and 1 novel view in batch for guidance: [novel, gt, gt, gt]
-        if self.cfg.novel_frame_count < self.cfg.n_view:
-            train_indexes = torch.randperm(self.n_frames)[:(self.cfg.n_view-self.cfg.novel_frame_count)]
+        if novel_frame_count < self.cfg.n_view:
+            train_indexes = torch.randperm(self.n_frames)[:(self.cfg.n_view-novel_frame_count)]
             index = torch.cat((torch.tensor([-1]), train_indexes))
         else:
             train_indexes = []
@@ -515,29 +796,73 @@ class MVDreamMultiviewIterableDataset(IterableDataset):
         #else:
         #    index = torch.randint(0, self.n_frames, (4,))
 
-        if self.cfg.novel_frame_count != 0:
-            novel_idx = torch.randint(self.novel_frames.n_frames, (self.cfg.novel_frame_count,))
+        if novel_frame_count != 0:
+            if not self.cfg.use_fib_generator:
+                self.novel_frames = self.novel_generator.collate(None)
+                self.novel_frames["n_frames"] = 4
+                novel_idx = torch.randint(self.novel_frames["n_frames"], (novel_frame_count,))
+            else:
+                novel_idx = torch.randint(self.novel_frames.n_frames, (novel_frame_count,))
         else:
             novel_idx = []
 
-        return {
-            "index": index,
-            "rays_o": torch.cat((self.novel_frames.rays_o[novel_idx], self.rays_o[train_indexes])),
-            "rays_d": torch.cat((self.novel_frames.rays_d[novel_idx], self.rays_d[train_indexes])),
-            "mvp_mtx": torch.cat((self.novel_frames.mvp_mtx[novel_idx], self.mvp_mtx[train_indexes])),
-            "c2w": torch.cat((self.novel_frames.frames_c2w[novel_idx], self.frames_c2w[train_indexes])),
-            "camera_positions": torch.cat((self.novel_frames.frames_position[novel_idx], self.frames_position[train_indexes])),
-            "light_positions": torch.cat((self.novel_frames.light_positions[novel_idx], self.light_positions[train_indexes])),
-            "transparency_masks": self.transparency_masks[train_indexes],
-            "gt_rgb": self.frames_img[train_indexes],
-            "height": self.frame_h,
-            "width": self.frame_w,
-            "elevation": None,
-            "azimuth": None,
-            "camera_distances": None,
-            "fovy": None, # Not used by model for camera conditioning
-            "novel_frame_count": self.cfg.novel_frame_count,
-        }
+        if novel_frame_count == 0:
+            return {
+                "index": index,
+                "rays_o": self.rays_o[train_indexes],
+                "rays_d": self.rays_d[train_indexes],
+                "mvp_mtx": self.mvp_mtx[train_indexes],
+                "c2w": self.frames_c2w[train_indexes],
+                "camera_positions": self.frames_position[train_indexes],
+                "light_positions": self.light_positions[train_indexes],
+                "transparency_masks": self.transparency_masks[train_indexes],
+                "gt_rgb": self.frames_img[train_indexes],
+                "height": self.frame_h,
+                "width": self.frame_w,
+                "elevation": None,
+                "azimuth": None,
+                "camera_distances": None,
+                "fovy": None, # Not used by model for camera conditioning
+                "novel_frame_count": novel_frame_count,
+            }
+        elif self.cfg.use_fib_generator:
+            return {
+                "index": index,
+                "rays_o": torch.cat((self.novel_frames.rays_o[novel_idx], self.rays_o[train_indexes])),
+                "rays_d": torch.cat((self.novel_frames.rays_d[novel_idx], self.rays_d[train_indexes])),
+                "mvp_mtx": torch.cat((self.novel_frames.mvp_mtx[novel_idx], self.mvp_mtx[train_indexes])),
+                "c2w": torch.cat((self.novel_frames.frames_c2w[novel_idx], self.frames_c2w[train_indexes])),
+                "camera_positions": torch.cat((self.novel_frames.frames_position[novel_idx], self.frames_position[train_indexes])),
+                "light_positions": torch.cat((self.novel_frames.light_positions[novel_idx], self.light_positions[train_indexes])),
+                "transparency_masks": self.transparency_masks[train_indexes],
+                "gt_rgb": self.frames_img[train_indexes],
+                "height": self.frame_h,
+                "width": self.frame_w,
+                "elevation": None,
+                "azimuth": None,
+                "camera_distances": None,
+                "fovy": None, # Not used by model for camera conditioning
+                "novel_frame_count": novel_frame_count,
+            }
+        else:
+            return {
+                "index": index,
+                "rays_o": torch.cat((self.novel_frames["rays_o"][novel_idx], self.rays_o[train_indexes])),
+                "rays_d": torch.cat((self.novel_frames["rays_d"][novel_idx], self.rays_d[train_indexes])),
+                "mvp_mtx": torch.cat((self.novel_frames["mvp_mtx"][novel_idx], self.mvp_mtx[train_indexes])),
+                "c2w": torch.cat((self.novel_frames["c2w"][novel_idx], self.frames_c2w[train_indexes])),
+                "camera_positions": torch.cat((self.novel_frames["camera_positions"][novel_idx], self.frames_position[train_indexes])),
+                "light_positions": torch.cat((self.novel_frames["light_positions"][novel_idx], self.light_positions[train_indexes])),
+                "transparency_masks": self.transparency_masks[train_indexes],
+                "gt_rgb": self.frames_img[train_indexes],
+                "height": self.frame_h,
+                "width": self.frame_w,
+                "elevation": None,
+                "azimuth": None,
+                "camera_distances": None,
+                "fovy": None, # Not used by model for camera conditioning
+                "novel_frame_count": novel_frame_count,
+            }
 
 
 @register("mvdream-multiview-camera-datamodule")

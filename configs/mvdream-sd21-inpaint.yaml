@@ -16,14 +16,23 @@ data:
   eval_downsample_resolution: 16 #Not used
   dataroot: ???
 
+  enableLateMV: true
+  startMVAt: 400
+  enableProbabilisticMV: false
+  MVProbability: .5
+  use_fib_generator: true
+  max_fib_poses: 1000
+
+
   # Random Camera Dataset for val/test poses
  #n_val_views: 4
   # 0-4999: 64x64, >=5000: 256x256
   width: [256, 256]
   height: [256, 256]
   resolution_milestones: [5000]
-  camera_distance_range: [0.8, 1.0] # relative
-  fovy_range: [15, 60]
+  relative_radius: false
+  camera_distance_range: [1, 1] # relative [0.8, 1] #[0.3, 0.6]
+  fovy_range: [40., 40.] #[15, 60]
   elevation_range: [0, 30]
   camera_perturb: 0.
   center_perturb: 0.
@@ -90,9 +99,9 @@ system:
   guidance:
     model_name: "sd-v2.1-base-4view"
     ckpt_path: null # path to a pre-downloaded checkpoint file (null for loading from URL)
-    guidance_scale: 50.0
-    min_step_percent: [0, 0.98, 0.02, 8000]  # (start_iter, start_val, end_val, end_iter)
-    max_step_percent: [0, 0.98, 0.50, 8000]
+    guidance_scale: 10 #50.0
+    min_step_percent: [0, 0.98, 0.02, 1300]  # (start_iter, start_val, end_val, end_iter) #  [0, 0.98, 0.02, 8000]
+    max_step_percent: [0, 0.98, 0.50, 1300] # [0, 0.98, 0.50, 8000]
     recon_loss: true
     recon_std_rescale: 0.5
     view_dependent_prompting: false # Disable this for now
@@ -124,10 +133,10 @@ system:
         lr: 0.001
 
 trainer:
-  max_steps: 10000
+  max_steps: 1500
   log_every_n_steps: 1
   num_sanity_val_steps: 0
-  val_check_interval: 400
+  val_check_interval: 200
   enable_progress_bar: true
   precision: 16-mixed
 

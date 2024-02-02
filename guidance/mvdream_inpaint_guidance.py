@@ -110,7 +110,7 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
         batch_size = rgb.shape[0]
         camera = c2w
 
-        transparency_on = False
+        transparency_on = False # No longer needed since now using default background color
         if transparency_on:
             gt_rgb = rgb[novel_frame_count:] * transparency_masks + (1. - transparency_masks) * gt_rgb
 
@@ -194,12 +194,12 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
             # Should mimic p_sample_ddim - but missing unconditional_conditioning?
             # add noise
             noise = torch.randn_like(latents)
-            mask = None
+            #mask = None # AAAAAAAAAAAAAAAAAA !!!!
 
             # forward pass unmasked regions
             if mask is not None:
                 latents_orig = self.model.q_sample(latents, t, noise)
-                latents_noisy = latents_orig * mask + (1. - mask) * latents
+                latents_noisy = latents * mask + (1. - mask) * latents_orig
             else:
                 latents_noisy = self.model.q_sample(latents, t, noise)
             # pred noise
@@ -239,6 +239,7 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
                 latents_noisy, t, noise_pred
             )
             
+            #mvlatents_recon 
             latents_recon = torch.cat((mvlatents_recon[:novel_frame_count], og_rgb_latents), dim=0) # All masked novel views
             #latents_recon = torch.stack((mvlatents_recon[0], og_rgb_latents[0], og_rgb_latents[1], og_rgb_latents[2])) #Single novel view
            # latents_recon = og_rgb_latents#torch.stack((og_rgb_latents[0], og_rgb_latents[1], og_rgb_latents[2], og_rgb_latents[3]))
