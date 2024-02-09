@@ -49,6 +49,7 @@ class MVDreamMultiviewsDataModuleConfig(MultiviewsDataModuleConfig):
 
     enableLateMV: bool = True
     startMVAt: int = 500
+    stopMVAt: int = 900
     enableProbabilisticMV: bool = False
     MVProbability: float = .5
     use_fib_generator: bool = True
@@ -361,7 +362,6 @@ class MVDreamMultiviewDataset(Dataset):
         h = camera_dict["h"] # 1080
         aabb_scale = camera_dict["aabb_scale"]
 
-        self.cfg.input_size = 256
         wScale =  self.cfg.crop_to // self.cfg.input_size
         hScale =  self.cfg.crop_to // self.cfg.input_size
 
@@ -424,6 +424,9 @@ class MVDreamMultiviewDataset(Dataset):
             frames_position.append(camera_position)
             frames_direction.append(direction)
             
+        ## Generate random views in cardinal directions for animations
+        self.randomDataset = RandomCameraDataset(cfg, split)
+
         threestudio.info("Loaded frames.")
 
         self.frames_proj: Float[Tensor, "B 4 4"] = torch.stack(frames_proj, dim=0)
@@ -457,18 +460,32 @@ class MVDreamMultiviewDataset(Dataset):
 
 
     def __len__(self):
-        return self.frames_proj.shape[0]
+        return self.frames_proj.shape[0]+len(self.randomDataset)
 
     def __getitem__(self, index):
+        if index >= self.randomDataset.n_views:
+            index = index - self.randomDataset.n_views
+            return {
+                "index": index+self.randomDataset.n_views,
+                "rays_o": self.rays_o[index],
+                "rays_d": self.rays_d[index],
+                "mvp_mtx": self.mvp_mtx[index],
+                "c2w": self.frames_c2w[index],
+                "camera_positions": self.frames_position[index],
+                "light_positions": self.light_positions[index],
+                "gt_rgb": self.frames_img[index],
+            }
+        
+        novel_view = self.randomDataset.__getitem__(index)
         return {
             "index": index,
-            "rays_o": self.rays_o[index],
-            "rays_d": self.rays_d[index],
-            "mvp_mtx": self.mvp_mtx[index],
-            "c2w": self.frames_c2w[index],
-            "camera_positions": self.frames_position[index],
-            "light_positions": self.light_positions[index],
-            "gt_rgb": self.frames_img[index],
+            "rays_o": novel_view["rays_o"],
+            "rays_d": novel_view["rays_d"],
+            "mvp_mtx": novel_view["mvp_mtx"],
+            "c2w": novel_view["c2w"],
+            "camera_positions": novel_view["camera_positions"],
+            "light_positions": novel_view["light_positions"],
+            "gt_rgb": torch.ones_like(self.frames_img[0]),
         }
 
     def __iter__(self):
@@ -478,6 +495,7 @@ class MVDreamMultiviewDataset(Dataset):
     def collate(self, batch):
         batch = torch.utils.data.default_collate(batch)
         batch.update({"height": self.frame_h, "width": self.frame_w})
+        batch.update({"stop_save_at": self.randomDataset.n_views})
         return batch
 
 class NovelFrames():
@@ -499,6 +517,34 @@ class NovelFrames():
 
         return points
 
+    def create_camera_to_world_matrix(elevation, azimuth):
+        elevation = np.radians(elevation)
+        azimuth = np.radians(azimuth)
+        # Convert elevation and azimuth angles to Cartesian coordinates on a unit sphere
+        x = np.cos(elevation) * np.sin(azimuth)
+        z = np.sin(elevation)
+        y = np.cos(elevation) * np.cos(azimuth)
+
+        # Calculate camera position, target, and up vectors
+        camera_pos = np.array([x, y, z])
+        target = np.array([0, 0, 0])
+        up = np.array([0, 1, 0])
+
+        # Construct view matrix
+        forward = target - camera_pos
+        forward /= np.linalg.norm(forward)
+        right = np.cross(forward, up)
+        right /= np.linalg.norm(right)
+        new_up = np.cross(right, forward)
+        new_up /= np.linalg.norm(new_up)
+        cam2world = np.eye(4)
+        cam2world[:3, :3] = np.array([right, new_up, -forward]).T
+        cam2world[:3, 3] = camera_pos
+
+        if np.isnan(cam2world).any():
+            return None
+        return cam2world
+    
     def fibonacci_northern_hemisphere(samples=1000):
         samples = samples * 2
         points = []
@@ -567,8 +613,23 @@ class NovelFrames():
         threestudio.info("Generating novel frames...")
         self.n_frames = num_poses
 
-        positions = NovelFrames.fibonacci_northern_hemisphere(self.n_frames)
-        autogen_sampled_poses = [NovelFrames.create_camera_to_world_matrix_fib(pos) for pos in positions]
+        #positions = NovelFrames.fibonacci_northern_hemisphere(self.n_frames)
+        #positions = create_camera_to_world_matrix
+        angle_gap = 2
+        azimuth_start = 0
+        azimuth_span = 360
+        elevation_start = 0
+        elevation_span = 30
+
+        azimuths = [azimuth for azimuth in np.arange(azimuth_start, azimuth_span+azimuth_start+angle_gap, angle_gap)]
+        elevations =  [elevation for elevation in np.arange(elevation_start, elevation_span+elevation_start+angle_gap, angle_gap)]
+        autogen_sampled_poses = [NovelFrames.create_camera_to_world_matrix(elevation, azimuth) for azimuth in azimuths for elevation in elevations]
+        autogen_sampled_poses = [torch.as_tensor(
+                x, dtype=torch.float32
+        ) for x in autogen_sampled_poses if x is not None]
+
+        self.n_frames = len(autogen_sampled_poses)
+        #autogen_sampled_poses = [NovelFrames.create_camera_to_world_matrix_fib(pos) for pos in positions]
 
         c2w_list = torch.stack(autogen_sampled_poses, dim=0)
 
@@ -687,9 +748,9 @@ class MVDreamMultiviewIterableDataset(IterableDataset):
 
             img = cv2.resize(img, (self.frame_w, self.frame_h))
 
-            transparency_mask = img[:, :, -1].copy()
-            transparency_mask: Float[Tensor, "H W 3"] = torch.FloatTensor(transparency_mask == 0).unsqueeze(dim=-1) # Boolean transparency mask
-            transparency_masks.append(transparency_mask)
+            transparency_mask = img[:, :, -1].copy() 
+            transparency_mask: Float[Tensor, "H W 3"] = torch.FloatTensor(~(transparency_mask == 0)).unsqueeze(dim=-1) # Boolean transparency mask
+            transparency_masks.append(transparency_mask) # 0 - transparent 1 - opaque (rgb)
 
             img = img[:, :, ::-1].copy()
 
@@ -773,7 +834,7 @@ class MVDreamMultiviewIterableDataset(IterableDataset):
             if self.train_step < self.cfg.startMVAt:
                 novel_frame_count = 0
 
-            if self.train_step >= 1300:
+            if self.train_step >= self.cfg.stopMVAt:
                 novel_frame_count = 0
         
         if self.cfg.enableProbabilisticMV:
@@ -877,11 +938,11 @@ class MVDreamMultiviewCameraDataModule(pl.LightningDataModule):
         if stage in [None, "fit"]:
             self.train_dataset = MVDreamMultiviewIterableDataset(self.cfg, self.cfg.train_split)
         if stage in [None, "fit", "validate"]:
-            self.val_dataset = RandomCameraDataset(self.cfg, "val")
-            #self.val_dataset = MVDreamMultiviewDataset(self.cfg, "val16")
+            #self.val_dataset = RandomCameraDataset(self.cfg, "val")
+            self.val_dataset = MVDreamMultiviewDataset(self.cfg, "val")
         if stage in [None, "test", "predict"]:
-            self.test_dataset = RandomCameraDataset(self.cfg, "test")
-            #self.test_dataset = MVDreamMultiviewDataset(self.cfg, "test")
+            #self.test_dataset = RandomCameraDataset(self.cfg, "test")
+            self.test_dataset = MVDreamMultiviewDataset(self.cfg, "test")
 
     def prepare_data(self):
         pass
