@@ -36,10 +36,10 @@ class MVDreamInpaintSystem(BaseLift3DSystem):
         
        # loss = 0.5 * F.mse_loss(out["comp_rgb"], batch['gt_rgb'], reduction="sum") / out["comp_rgb"].shape[0]
        # return {"loss": loss}
-        guidance_out = self.guidance(out["comp_rgb"], self.prompt_utils, **batch)
-        gc.collect()
-        torch.cuda.empty_cache()
-        #tcnn.free_temporary_memory()
+        guidance_out = self.guidance(out["comp_rgb"], out["comp_rgb_bg"], self.prompt_utils, **batch)
+        #gc.collect()
+        #torch.cuda.empty_cache()
+       # #tcnn.free_temporary_memory()
 
         loss = 0.0
 
@@ -95,6 +95,11 @@ class MVDreamInpaintSystem(BaseLift3DSystem):
 
     def validation_step(self, batch, batch_idx):
         out = self(batch)
+
+        if 'stop_save_at' in batch.keys():
+            if batch['index'] >= batch['stop_save_at']:
+                return
+            
         self.save_image_grid(
             f"it{self.true_global_step}-{batch['index'][0]}.png",
             (
@@ -135,6 +140,11 @@ class MVDreamInpaintSystem(BaseLift3DSystem):
 
     def test_step(self, batch, batch_idx):
         out = self(batch)
+        
+        if 'stop_save_at' in batch.keys():
+            if batch['index'] >= batch['stop_save_at']:
+                return
+        
         self.save_image_grid(
             f"it{self.true_global_step}-test/{batch['index'][0]}.png",
             (

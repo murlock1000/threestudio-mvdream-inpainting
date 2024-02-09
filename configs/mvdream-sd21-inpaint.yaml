@@ -16,8 +16,10 @@ data:
   eval_downsample_resolution: 16 #Not used
   dataroot: ???
 
-  enableLateMV: true
-  startMVAt: 400
+  enableLateMV: true # If disabled - startMVAt must be at 0 and stopMVAt max_steps
+  startMVAt: 1000
+  stopMVAt: 9000
+
   enableProbabilisticMV: false
   MVProbability: .5
   use_fib_generator: true
@@ -67,19 +69,20 @@ system:
     n_output_dims: 3
     color_activation: sigmoid
 
-  #background_type: "mvdream-neural-environment-map-background"
-  #background:
-  #  color_activation: sigmoid
-  #  random_aug: true
-  #  share_aug_bg: true
-  
-  background_type: "solid-color-background"
+  background_type: "mvdream-neural-environment-map-background"
   background:
-    n_output_dims: 3
-    color: [1.0, 1.0, 1.0]
-    learned: False
-    random_aug: False
-    random_aug_prob: 0.5
+    color_activation: sigmoid
+    random_aug: true
+    share_aug_bg: true
+    eval_color: [1.0, 1.0, 1.0]
+  
+  #background_type: "solid-color-background"
+  #background:
+  #  n_output_dims: 3
+  #  color: [1.0, 1.0, 1.0]
+  #  learned: False
+  #  random_aug: False
+  #  random_aug_prob: 0.5
 
   renderer_type: "nerf-volume-renderer"
   renderer:
@@ -100,8 +103,11 @@ system:
     model_name: "sd-v2.1-base-4view"
     ckpt_path: null # path to a pre-downloaded checkpoint file (null for loading from URL)
     guidance_scale: 10 #50.0
-    min_step_percent: [0, 0.98, 0.02, 1300]  # (start_iter, start_val, end_val, end_iter) #  [0, 0.98, 0.02, 8000]
-    max_step_percent: [0, 0.98, 0.50, 1300] # [0, 0.98, 0.50, 8000]
+    min_step_percent: [1000, 0.98, 0.02, 7000]  # (start_iter, start_val, end_val, end_iter) #  [0, 0.98, 0.02, 8000]
+    max_step_percent: [1000, 0.98, 0.50, 7000] # [0, 0.98, 0.50, 8000]
+
+    #min_step_percent: [400, 0.98, 0.02, 1300]  # (start_iter, start_val, end_val, end_iter) #  [0, 0.98, 0.02, 8000]
+    #max_step_percent: [400, 0.98, 0.50, 1300] # [0, 0.98, 0.50, 8000]
     recon_loss: true
     recon_std_rescale: 0.5
     view_dependent_prompting: false # Disable this for now
@@ -133,10 +139,10 @@ system:
         lr: 0.001
 
 trainer:
-  max_steps: 1500
+  max_steps: 10000
   log_every_n_steps: 1
   num_sanity_val_steps: 0
-  val_check_interval: 200
+  val_check_interval: 400
   enable_progress_bar: true
   precision: 16-mixed
 

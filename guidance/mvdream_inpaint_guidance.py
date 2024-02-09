@@ -91,6 +91,7 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
     def __call__(
         self,
         rgb: Float[Tensor, "B H W C"],
+        comp_rgb_bg: Float[Tensor, "B H W C"],
         prompt_utils: PromptProcessorOutput,
         gt_rgb: Float[Tensor, "B H W 3"],
         #elevation: Float[Tensor, "B"],
@@ -110,9 +111,8 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
         batch_size = rgb.shape[0]
         camera = c2w
 
-        transparency_on = False # No longer needed since now using default background color
-        if transparency_on:
-            gt_rgb = rgb[novel_frame_count:] * transparency_masks + (1. - transparency_masks) * gt_rgb
+        if novel_frame_count != batch_size:
+            gt_rgb = gt_rgb * transparency_masks + comp_rgb_bg[novel_frame_count:] * (1. - transparency_masks)
 
         rgb_BCHW = rgb.permute(0, 3, 1, 2)
         gt_rgb_BCHW = gt_rgb.permute(0, 3, 1, 2)
