@@ -21,6 +21,8 @@ class MVDreamInpaintSystem(BaseLift3DSystem):
     def configure(self) -> None:
         # set up geometry, material, background, renderer
         super().configure()
+        self.val_evaluator = None
+        self.test_evaluator = None
         self.guidance = threestudio.find(self.cfg.guidance_type)(self.cfg.guidance)
         self.prompt_processor = threestudio.find(self.cfg.prompt_processor_type)(
             self.cfg.prompt_processor
@@ -98,7 +100,10 @@ class MVDreamInpaintSystem(BaseLift3DSystem):
 
         if 'stop_save_at' in batch.keys():
             if batch['index'] >= batch['stop_save_at']:
-                return
+                if self.val_evaluator is None:
+                    self.val_evaluator = batch["evaluator"]
+                batch["evaluator"].simple_compute(out["comp_rgb"], batch["gt_rgb"], batch['index'][0].item())
+                return 
             
         self.save_image_grid(
             f"it{self.true_global_step}-{batch['index'][0]}.png",
@@ -136,6 +141,7 @@ class MVDreamInpaintSystem(BaseLift3DSystem):
         )
 
     def on_validation_epoch_end(self):
+        self.val_evaluator.calc_average(self.global_step, self.logger.root_dir)
         pass
 
     def test_step(self, batch, batch_idx):
@@ -143,7 +149,10 @@ class MVDreamInpaintSystem(BaseLift3DSystem):
         
         if 'stop_save_at' in batch.keys():
             if batch['index'] >= batch['stop_save_at']:
-                return
+                if self.test_evaluator is None:
+                    self.test_evaluator = batch["evaluator"]
+                batch["evaluator"].simple_compute(out["comp_rgb"], batch["gt_rgb"], batch['index'][0].item())
+                return 
         
         self.save_image_grid(
             f"it{self.true_global_step}-test/{batch['index'][0]}.png",
@@ -181,6 +190,8 @@ class MVDreamInpaintSystem(BaseLift3DSystem):
         )
 
     def on_test_epoch_end(self):
+        self.test_evaluator.calc_average(self.current_epoch, self.logger.root_dir)
+
         self.save_img_sequence(
             f"it{self.true_global_step}-test",
             f"it{self.true_global_step}-test",

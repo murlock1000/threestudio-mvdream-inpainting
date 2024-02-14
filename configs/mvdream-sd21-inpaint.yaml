@@ -11,14 +11,14 @@ data:
   input_size: 128
   crop_to: 1024
   rays_d_normalize: true
-  novel_frame_count: 1 # Number of novel view tiles, where 0 
+  novel_frame_count: 4 # Number of novel view tiles, where 0 
   train_downsample_resolution: 16 #Not used
   eval_downsample_resolution: 16 #Not used
   dataroot: ???
 
-  enableLateMV: true # If disabled - startMVAt must be at 0 and stopMVAt max_steps
+  enableLateMV: false # If disabled - startMVAt must be at 0 and stopMVAt max_steps
   startMVAt: 1000
-  stopMVAt: 9000
+  stopMVAt: 3000
 
   enableProbabilisticMV: false
   MVProbability: .5
@@ -103,8 +103,8 @@ system:
     model_name: "sd-v2.1-base-4view"
     ckpt_path: null # path to a pre-downloaded checkpoint file (null for loading from URL)
     guidance_scale: 10 #50.0
-    min_step_percent: [1000, 0.98, 0.02, 7000]  # (start_iter, start_val, end_val, end_iter) #  [0, 0.98, 0.02, 8000]
-    max_step_percent: [1000, 0.98, 0.50, 7000] # [0, 0.98, 0.50, 8000]
+    min_step_percent: [0, 0.98, 0.02, 8000]  # (start_iter, start_val, end_val, end_iter) #  [0, 0.98, 0.02, 8000]
+    max_step_percent: [0, 0.98, 0.50, 8000] # [0, 0.98, 0.50, 8000]
 
     #min_step_percent: [400, 0.98, 0.02, 1300]  # (start_iter, start_val, end_val, end_iter) #  [0, 0.98, 0.02, 8000]
     #max_step_percent: [400, 0.98, 0.50, 1300] # [0, 0.98, 0.50, 8000]
@@ -139,10 +139,10 @@ system:
         lr: 0.001
 
 trainer:
-  max_steps: 10000
+  max_steps: 5000
   log_every_n_steps: 1
   num_sanity_val_steps: 0
-  val_check_interval: 400
+  val_check_interval: 200
   enable_progress_bar: true
   precision: 16-mixed
 

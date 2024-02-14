@@ -99,7 +99,7 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
         #camera_distances: Float[Tensor, "B"],
         novel_frame_count,
         c2w: Float[Tensor, "B 4 4"],
-        transparency_masks: Float[Tensor, "B H W 3"],
+        transparency_masks: Float[Tensor, "B H W 1"],
         mask: Float[Tensor, "B H W C"] = None,
         rgb_as_latents: bool = False,
         fovy=None,
