@@ -46,7 +46,8 @@ class MVDreamMultiviewsDataModuleConfig(MultiviewsDataModuleConfig):
     input_size: int = 256
     novel_frame_count: int = 1
     train_split: str = "train"
-
+    relative_paths: bool = True
+    
     enableLateMV: bool = True
     startMVAt: int = 500
     stopMVAt: int = 900
@@ -394,7 +395,10 @@ class MVDreamMultiviewDataset(Dataset):
             intrinsic[0, 2] = (cx - (w-self.cfg.crop_to)/2) / wScale # Cropping reduces cx,cy by pixels cropped in top and left.
             intrinsic[1, 2] = (cy - (h-self.cfg.crop_to)/2) / hScale
 
-            frame_path = os.path.join(self.cfg.dataroot, frame["file_path"]+".png")
+            if self.cfg.relative_paths:
+                frame_path = os.path.join(self.cfg.dataroot, frame["file_path"]+".png")
+            else:
+                frame_path = frame["file_path"]+".png"
             img = cv2.imread(frame_path)
             
             img = crop_center(img, self.cfg.crop_to, self.cfg.crop_to)
@@ -750,7 +754,11 @@ class MVDreamMultiviewIterableDataset(IterableDataset):
             intrinsic[0, 2] = (cx - (w-self.cfg.crop_to)/2) / wScale # Cropping reduces cx,cy by pixels cropped in top and left.
             intrinsic[1, 2] = (cy - (h-self.cfg.crop_to)/2) / hScale
 
-            frame_path = os.path.join(self.cfg.dataroot, frame["file_path"]+".png")
+            if self.cfg.relative_paths:
+                frame_path = os.path.join(self.cfg.dataroot, frame["file_path"]+".png")
+            else:
+                frame_path = frame["file_path"]+".png"
+
             img = cv2.imread(frame_path)
             
             img = crop_center(img, self.cfg.crop_to, self.cfg.crop_to)
@@ -847,7 +855,7 @@ class MVDreamMultiviewIterableDataset(IterableDataset):
                 novel_frame_count = 0
         
         if self.cfg.enableProbabilisticMV:
-            if self.cfg.MVProbability > random.random():
+            if random.random() > self.cfg.MVProbability:
                 novel_frame_count = 0
             
                 
