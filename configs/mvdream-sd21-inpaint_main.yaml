@@ -5,7 +5,7 @@ seed: 0
 
 data_type: "mvdream-multiview-camera-datamodule"
 data:
-  train_split: "train" #train4
+  train_split: "train"
   batch_size: [4,4]
   n_view: 4
   input_size: 128
@@ -28,7 +28,7 @@ data:
 
 
   # Random Camera Dataset for val/test poses
- #n_val_views: 4
+  #n_val_views: 4
   # 0-4999: 64x64, >=5000: 256x256
   width: [256, 256]
   height: [256, 256]

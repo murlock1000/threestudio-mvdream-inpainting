@@ -47,7 +47,7 @@ class MVDreamMultiviewsDataModuleConfig(MultiviewsDataModuleConfig):
     novel_frame_count: int = 1
     train_split: str = "train"
     relative_paths: bool = True
-    
+
     enableLateMV: bool = True
     startMVAt: int = 500
     stopMVAt: int = 900
@@ -395,11 +395,8 @@ class MVDreamMultiviewDataset(Dataset):
             intrinsic[0, 2] = (cx - (w-self.cfg.crop_to)/2) / wScale # Cropping reduces cx,cy by pixels cropped in top and left.
             intrinsic[1, 2] = (cy - (h-self.cfg.crop_to)/2) / hScale
 
-            if self.cfg.relative_paths:
-                frame_path = os.path.join(self.cfg.dataroot, frame["file_path"]+".png")
-            else:
-                frame_path = frame["file_path"]+".png"
-            img = cv2.imread(frame_path)
+            frame_path = os.path.join(self.cfg.dataroot, frame["file_path"]+".png")
+            img = cv2.imread(frame_path, cv2.IMREAD_UNCHANGED)
             
             img = crop_center(img, self.cfg.crop_to, self.cfg.crop_to)
 
@@ -408,7 +405,7 @@ class MVDreamMultiviewDataset(Dataset):
             transparency_mask = img[:, :, -1].copy()
             transparency_mask: Float[Tensor, "H W 1"] = torch.FloatTensor(~(transparency_mask == 0)).unsqueeze(dim=-1) # Boolean transparency mask with 0 - transparent 1 - opaque (rgb)
 
-            img = img[:, :, ::-1].copy()
+            img = img[:, :, -2::-1].copy()
             img: Float[Tensor, "H W 3"] = torch.FloatTensor(img) / 255
 
             white_bck = torch.ones_like(img)
@@ -754,24 +751,28 @@ class MVDreamMultiviewIterableDataset(IterableDataset):
             intrinsic[0, 2] = (cx - (w-self.cfg.crop_to)/2) / wScale # Cropping reduces cx,cy by pixels cropped in top and left.
             intrinsic[1, 2] = (cy - (h-self.cfg.crop_to)/2) / hScale
 
-            if self.cfg.relative_paths:
-                frame_path = os.path.join(self.cfg.dataroot, frame["file_path"]+".png")
-            else:
-                frame_path = frame["file_path"]+".png"
+            frame_path = os.path.join(self.cfg.dataroot, frame["file_path"]+".png")
 
-            img = cv2.imread(frame_path)
+            img = cv2.imread(frame_path, cv2.IMREAD_UNCHANGED)
             
             img = crop_center(img, self.cfg.crop_to, self.cfg.crop_to)
 
             img = cv2.resize(img, (self.frame_w, self.frame_h))
 
+            bck_mask = img[:, :, 3] == 0
+            img[bck_mask, :] = (0, 0, 0, 0)
+
             transparency_mask = img[:, :, -1].copy() 
             transparency_mask: Float[Tensor, "H W 1"] = torch.FloatTensor(~(transparency_mask == 0)).unsqueeze(dim=-1) # Boolean transparency mask
             transparency_masks.append(transparency_mask) # 0 - transparent 1 - opaque (rgb)
 
-            img = img[:, :, ::-1].copy()
+            img = img[:, :, -2::-1].copy()
 
             img: Float[Tensor, "H W 3"] = torch.FloatTensor(img) / 255
+
+            #white_bck = torch.ones_like(img)
+           # img = img * transparency_mask + white_bck * (1. - transparency_mask) # Set background to white
+
             frames_img.append(img)
 
             direction: Float[Tensor, "H W 3"] = get_ray_directions(
