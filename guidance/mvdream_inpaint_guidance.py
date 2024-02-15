@@ -117,12 +117,6 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
         rgb_BCHW = rgb.permute(0, 3, 1, 2)
         gt_rgb_BCHW = gt_rgb.permute(0, 3, 1, 2)
                
-        if text_embeddings is None:
-            text_embeddings = prompt_utils.get_text_embeddings(
-                #elevation, azimuth, camera_distances, self.cfg.view_dependent_prompting
-                torch.ones_like(rgb), None, None, self.cfg.view_dependent_prompting
-            )
-
         if input_is_latent:
             latents = rgb
         else:
@@ -156,7 +150,7 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
                 # encode image into latents with vae, requires grad!
         og_rgb_latents = self.encode_images(pred_gt_rgb)
 
-        if novel_frame_count ==0:
+        if novel_frame_count == 0:
             # x0-reconstruction loss from Sec 3.2 and Appendix
             latents_recon = og_rgb_latents
             loss = (
@@ -171,6 +165,11 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
                 "grad_norm": grad.norm(),
             }
     
+        if text_embeddings is None:
+            text_embeddings = prompt_utils.get_text_embeddings(
+                #elevation, azimuth, camera_distances, self.cfg.view_dependent_prompting
+                torch.ones_like(rgb), None, None, self.cfg.view_dependent_prompting
+            )
          # sample timestep
         if timestep is None:
             t = torch.randint(
