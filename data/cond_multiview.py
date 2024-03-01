@@ -54,7 +54,7 @@ class MVDreamMultiviewsDataModuleConfig(MultiviewsDataModuleConfig):
     enableProbabilisticMV: bool = False
     MVProbability: float = .5
     enableStagedMV: bool = False
-    stagesMV: Tuple[int, int, int, int, int] = [1000, 2000, 3000, 4000, 5500]
+    stagesMV: Tuple[int, int, int, int, int] = (1000, 2000, 3000, 4000, 5500)
     use_fib_generator: bool = True
     max_fib_poses: int = 1000
 
