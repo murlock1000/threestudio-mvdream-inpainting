@@ -23,6 +23,9 @@ data:
   enableProbabilisticMV: true
   MVProbability: .75
 
+  enableStagedMV: false
+  stagesMV: [1000, 2000, 3000, 4000, 5500]
+
   use_fib_generator: false
   max_fib_poses: 1000
 

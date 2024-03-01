@@ -53,6 +53,8 @@ class MVDreamMultiviewsDataModuleConfig(MultiviewsDataModuleConfig):
     stopMVAt: int = 900
     enableProbabilisticMV: bool = False
     MVProbability: float = .5
+    enableStagedMV: bool = False
+    stagesMV: Tuple[int, int, int, int, int] = [1000, 2000, 3000, 4000, 5500]
     use_fib_generator: bool = True
     max_fib_poses: int = 1000
 
@@ -848,6 +850,18 @@ class MVDreamMultiviewIterableDataset(IterableDataset):
         self.train_step += 1
         
         novel_frame_count = self.cfg.novel_frame_count
+        
+        if self.cfg.enableStagedMV:
+            stages = self.cfg.stagesMV
+            if stages[0] < self.train_step < stages[1]:
+                novel_frame_count = 4
+            elif stages[1] < self.train_step < stages[2]:
+                novel_frame_count = 3
+            elif stages[2] < self.train_step < stages[3]:
+                novel_frame_count = 2
+            elif stages[3] < self.train_step < stages[4]:
+                novel_frame_count = 1
+        
         if self.cfg.enableLateMV:
             if self.train_step < self.cfg.startMVAt:
                 novel_frame_count = 0
