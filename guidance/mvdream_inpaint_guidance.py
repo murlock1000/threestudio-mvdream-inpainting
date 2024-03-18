@@ -187,8 +187,8 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
         # predict the noise residual with unet, NO grad!
         with torch.no_grad():
             # Setup inpainting tile mask to unmask novel views
-            mask = torch.ones(latents.shape, device=latents.device)
-            mask[np.arange(novel_frame_count), :, :, :] = 0
+            #mask = torch.ones(latents.shape, device=latents.device)
+            #mask[np.arange(novel_frame_count), :, :, :] = 0 # [0, 1, 1, 1]
 
             # Should mimic p_sample_ddim - but missing unconditional_conditioning?
             # add noise
@@ -196,13 +196,18 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
             #mask = None # AAAAAAAAAAAAAAAAAA !!!!
 
             # forward pass unmasked regions
-            if mask is not None:
-                latents_orig = self.model.q_sample(latents, t, noise)
-                latents_noisy = latents * mask + (1. - mask) * latents_orig
-            else:
-                latents_noisy = self.model.q_sample(latents, t, noise)
+            #if mask is not None:
+            #    latents_orig = self.model.q_sample(latents, t, noise)
+            #    latents_noisy = latents * mask + (1. - mask) * latents_orig
+            #else:
+            latents_noisy = self.model.q_sample(latents, t, noise)
             # pred noise
+
+            # Use gt_rgb latents for reference poses
+            if novel_frame_count < 4:
+                latents_noisy[novel_frame_count:] = og_rgb_latents
             latent_model_input = torch.cat([latents_noisy] * 2)
+
 
             # save input tensors for UNet
             if camera is not None:
