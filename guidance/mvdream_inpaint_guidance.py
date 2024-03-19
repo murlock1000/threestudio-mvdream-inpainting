@@ -200,12 +200,14 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
             #    latents_orig = self.model.q_sample(latents, t, noise)
             #    latents_noisy = latents * mask + (1. - mask) * latents_orig
             #else:
+
             latents_noisy = self.model.q_sample(latents, t, noise)
+            og_rgb_latents_noisy = self.model.q_sample(og_rgb_latents, t, noise)
             # pred noise
 
-            # Use gt_rgb latents for reference poses
+            # Use gt_rgb noisy latents for reference poses
             if novel_frame_count < 4:
-                latents_noisy[novel_frame_count:] = og_rgb_latents
+                latents_noisy[novel_frame_count:] = og_rgb_latents_noisy
             latent_model_input = torch.cat([latents_noisy] * 2)
 
 
@@ -273,7 +275,7 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
 
             # x0-reconstruction loss from Sec 3.2 and Appendix
             loss = (
-                0.5
+                0.5         #pred_rgb (denoised novel + gt)
                 * F.mse_loss(latents, latents_recon, reduction="sum")
                 / latents.shape[0]
             )
