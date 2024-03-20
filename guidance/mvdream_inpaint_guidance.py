@@ -200,14 +200,17 @@ class MultiviewInpaintDiffusionGuidance(BaseObject):
             #    latents_orig = self.model.q_sample(latents, t, noise)
             #    latents_noisy = latents * mask + (1. - mask) * latents_orig
             #else:
-
-            latents_noisy = self.model.q_sample(latents, t, noise)
-            og_rgb_latents_noisy = self.model.q_sample(og_rgb_latents, t, noise)
-            # pred noise
-
+            latent_inputs = latents.clone()
             # Use gt_rgb noisy latents for reference poses
             if novel_frame_count < 4:
-                latents_noisy[novel_frame_count:] = og_rgb_latents_noisy
+                latent_inputs[novel_frame_count:] = og_rgb_latents
+
+            latents_noisy = self.model.q_sample(latent_inputs, t, noise)
+            # pred noise
+
+            
+           # if novel_frame_count < 4:
+           #     latents_noisy[novel_frame_count:] = og_rgb_latents_noisy
             latent_model_input = torch.cat([latents_noisy] * 2)
 
 
